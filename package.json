@@ -9,7 +9,9 @@
   "main": "app.ts",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"tsc -w\" \"fastify start --ignore-watch=.ts$ -w -l info -P dist/app.js\""
+    "dev": "tsc && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"tsc -w\" \"fastify start --ignore-watch=.ts$ -w -l info -P dist/app.js\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "repository": {
     "type": "git",
@@ -29,6 +31,7 @@
     "@types/node": "^20.4.4",
     "concurrently": "^8.2.2",
     "fastify-cli": "^6.1.0",
+    "prettier": "^3.2.5",
     "typescript": "^5.2.2"
   }
 }

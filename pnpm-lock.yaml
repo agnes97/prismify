@@ -31,6 +31,9 @@ devDependencies:
   fastify-cli:
     specifier: ^6.1.0
     version: 6.1.0
+  prettier:
+    specifier: ^3.2.5
+    version: 3.2.5
   typescript:
     specifier: ^5.2.2
     version: 5.3.3
@@ -740,6 +743,12 @@ packages:
     engines: {node: '>=8'}
     dependencies:
       find-up: 3.0.0
+    dev: true
+
+  /prettier@3.2.5:
+    resolution: {integrity: sha512-3/GWa9aOC0YeD7LUfvOG2NiDyhOWRvt1k+rcKhOuYnMY24iiCphgneUfJDyFXd6rZCAnuLBv6UeAULtrhT/F4A==}
+    engines: {node: '>=14'}
+    hasBin: true
     dev: true
 
   /process-warning@2.3.2:

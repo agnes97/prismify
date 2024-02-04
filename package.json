@@ -19,16 +19,16 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
-    "fastify": "^4.0.0",
-    "fastify-plugin": "^4.0.0",
     "@fastify/autoload": "^5.0.0",
-    "@fastify/sensible": "^5.0.0"
+    "@fastify/sensible": "^5.0.0",
+    "fastify": "^4.0.0",
+    "fastify-plugin": "^4.0.0"
   },
   "devDependencies": {
+    "@total-typescript/ts-reset": "^0.5.1",
     "@types/node": "^20.4.4",
     "concurrently": "^8.2.2",
     "fastify-cli": "^6.1.0",
-    "fastify-tsconfig": "^2.0.0",
     "typescript": "^5.2.2"
   }
 }

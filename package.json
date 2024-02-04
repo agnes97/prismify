@@ -1,30 +1,32 @@
 {
-  "type": "module",
   "name": "prismify",
-  "description": "This project was bootstrapped with Fastify-CLI.",
   "version": "1.0.0",
+  "description": "Fastify + Prisma BackEnd for my personal projects.",
+  "type": "module",
+  "engines": {
+    "node": "^18"
+  },
   "main": "app.ts",
   "scripts": {
-    "start": "npm run build:ts && fastify start -l info dist/app.js",
-    "build:ts": "tsc",
-    "watch:ts": "tsc -w",
-    "dev": "npm run build:ts && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"npm:watch:ts\" \"npm:dev:start\"",
-    "dev:start": "fastify start --ignore-watch=.ts$ -w -l info -P dist/app.js"
+    "build": "tsc",
+    "dev": "tsc && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"tsc -w\" \"fastify start --ignore-watch=.ts$ -w -l info -P dist/app.js\""
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agnes97/prismify"
+  },
+  "author": "Jana Mácová (https://github.com/agnes97)",
+  "private": true,
   "dependencies": {
     "fastify": "^4.0.0",
     "fastify-plugin": "^4.0.0",
     "@fastify/autoload": "^5.0.0",
-    "@fastify/sensible": "^5.0.0",
-    "fastify-cli": "^6.1.0"
+    "@fastify/sensible": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.4.4",
-    "ts-node": "^10.4.0",
     "concurrently": "^8.2.2",
+    "fastify-cli": "^6.1.0",
     "fastify-tsconfig": "^2.0.0",
     "typescript": "^5.2.2"
   }

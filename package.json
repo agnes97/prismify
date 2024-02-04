@@ -16,6 +16,7 @@
     "url": "https://github.com/agnes97/prismify"
   },
   "author": "Jana Mácová (https://github.com/agnes97)",
+  "license": "MIT",
   "private": true,
   "dependencies": {
     "fastify": "^4.0.0",

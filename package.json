@@ -8,6 +8,7 @@
   },
   "main": "app.ts",
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "tsc && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"tsc -w\" \"fastify start --ignore-watch=.ts$ -w -l info -P dist/src/app.js\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -24,6 +25,7 @@
   "dependencies": {
     "@fastify/autoload": "^5.0.0",
     "@fastify/sensible": "^5.0.0",
+    "@prisma/client": "5.9.1",
     "fastify": "^4.0.0",
     "fastify-plugin": "^4.0.0"
   },
@@ -33,9 +35,11 @@
     "@typescript-eslint/eslint-plugin": "^6.20.0",
     "@typescript-eslint/parser": "^6.20.0",
     "concurrently": "^8.2.2",
+    "dotenv-cli": "^7.3.0",
     "eslint": "^8.56.0",
     "fastify-cli": "^6.1.0",
     "prettier": "^3.2.5",
+    "prisma": "^5.9.1",
     "typescript": "^5.2.2",
     "vercel": "^33.5.0"
   }

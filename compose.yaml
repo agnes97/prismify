@@ -1,0 +1,24 @@
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: always
+    environment:
+      - POSTGRES_DB=${DATABASE_DATABASE}
+      - POSTGRES_USER=${DATABASE_USER}
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
+    ports:
+      - 5432:5432
+    volumes:
+      - database:/var/lib/postgresql/data
+  adminer:
+    image: adminer:4.8.1
+    container_name: adminer
+    restart: always
+    environment:
+      - ADMINER_DEFAULT_SERVER=database
+    ports:
+      - 8080:8080
+
+volumes:
+  database:

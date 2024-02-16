@@ -4,6 +4,13 @@ This project was bootstrapped with [Fastify-CLI](https://www.npmjs.com/package/f
 
 To learn Fastify, check out the [Fastify documentation](https://fastify.dev/docs/latest/).
 
+## Prerequisities
+
+- [Git](https://git-scm.com/)
+- [Node.js](https://nodejs.org/)
+- [pnpm](https://pnpm.io/)
+- [Docker](https://www.docker.com/)
+
 ## Setup project locally
 
 Install dependencies:
@@ -12,10 +19,12 @@ Install dependencies:
 pnpm install
 ```
 
-Download remote environment configuration from Vercel by running:
+Copy the `.env.template` file as the `.env` file and update default values if needed.
+
+Run the Docker Compose to setup the local environment:
 
 ```
-pnpm vercel env pull .env
+docker compose up -d
 ```
 
 ## Run project locally

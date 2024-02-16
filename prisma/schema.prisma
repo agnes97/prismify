@@ -6,11 +6,50 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_PRISMA_URL") // uses connection pooling
-  directUrl = env("DATABASE_URL_NON_POOLING") // uses a direct connection
+  provider          = "postgresql"
+  url               = env("DATABASE_PRISMA_URL") // uses connection pooling
+  directUrl         = env("DATABASE_URL_NON_POOLING") // uses a direct connection
+  shadowDatabaseUrl = env("DATABASE_SHADOW_URL")
 }
 
 model Access {
   id String @id
+}
+
+enum CompareMethod {
+  EQUAL
+  INCLUDES
+}
+
+model CategoryType {
+  name       String        @id
+  places     String[]      @default([])
+  lowercase  Boolean       @default(false)
+  compare    CompareMethod @default(INCLUDES)
+  categories Category[]
+}
+
+model Category {
+  name             String       @id
+  emoji            String
+  CategoryType     CategoryType @relation(fields: [categoryTypeName], references: [name])
+  categoryTypeName String
+  keys             String[]     @default([])
+  items            Item[]
+}
+
+model Item {
+  id           BigInt     @id
+  title        String
+  description  String
+  countryCode  String
+  priceNumeric Float
+  currency     String
+  url          String
+  brand        String
+  thumbnailSrc String
+  lastActivity DateTime
+  categories   Category[]
+  isReserved   Boolean    @default(false)
+  isSold       Boolean    @default(false)
 }

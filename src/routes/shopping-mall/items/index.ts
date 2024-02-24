@@ -57,6 +57,38 @@ const items: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       return reply.send()
     },
   })
+
+  fastify
+    .withTypeProvider<ZodTypeProvider>()
+    .get('/', async (_request, _reply) => {
+      const storedItems = await fastify.prisma.item.findMany({
+        select: {
+          title: true,
+          description: true,
+          countryCode: true,
+          priceNumeric: true,
+          currency: true,
+          brand: true,
+          categories: {
+            select: {
+              name: true,
+            },
+          },
+        },
+        where: {
+          isReserved: false,
+          isSold: false,
+        },
+        orderBy: {
+          id: 'asc',
+        },
+      })
+
+      return storedItems.map(({ categories, ...item }) => ({
+        ...item,
+        categories: categories.map((category) => category.name),
+      }))
+    })
 }
 
 export default items

@@ -24,6 +24,7 @@
   "private": true,
   "dependencies": {
     "@fastify/autoload": "^5.0.0",
+    "@fastify/jwt": "^8.0.0",
     "@fastify/sensible": "^5.0.0",
     "@prisma/client": "5.9.1",
     "fastify": "^4.0.0",

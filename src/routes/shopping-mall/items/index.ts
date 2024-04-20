@@ -15,6 +15,8 @@ import { itemSchema } from './item.validation.js'
 const oneMB = 1048576
 
 const items: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
+  fastify.addHook('onRequest', fastify.authenticate)
+
   fastify.withTypeProvider<ZodTypeProvider>().route({
     method: 'PUT',
     url: '/',

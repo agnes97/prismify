@@ -50,6 +50,39 @@ const auth: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       return reply.send({ accessToken })
     },
   )
+
+  fastify.get(
+    '/me',
+    {
+      onRequest: [fastify.authenticate],
+    },
+    async (request, reply) => {
+      const userId = request.user.id
+
+      const userData = await fastify.prisma.user.findUnique({
+        select: {
+          id: true,
+          email: true,
+          lastLoggedIn: true,
+          createdAt: true,
+          profile: {
+            select: {
+              name: true,
+              avatar: true,
+            },
+          },
+        },
+        where: { id: userId },
+      })
+
+      if (!userData) {
+        return reply.status(404).send({ message: 'User not found' })
+      }
+
+      const { profile, ...user } = userData
+      return reply.send({ ...user, ...profile })
+    },
+  )
 }
 
 export default auth

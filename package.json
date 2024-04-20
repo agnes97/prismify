@@ -4,7 +4,7 @@
   "description": "Fastify + Prisma BackEnd for my personal projects.",
   "type": "module",
   "engines": {
-    "node": "^18"
+    "node": ">=18"
   },
   "main": "app.ts",
   "scripts": {

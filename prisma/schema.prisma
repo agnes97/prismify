@@ -53,3 +53,19 @@ model Item {
   isReserved   Boolean    @default(false)
   isSold       Boolean    @default(false)
 }
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  password     String
+  createdAt    DateTime  @default(now())
+  lastLoggedIn DateTime?
+  profile      Profile?
+}
+
+model Profile {
+  id     String  @id
+  user   User    @relation(fields: [id], references: [id])
+  name   String
+  avatar String?
+}

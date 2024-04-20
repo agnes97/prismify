@@ -34,10 +34,13 @@ declare module 'fastify' {
   }
 }
 
-export default fp(async (fastify) => {
-  await fastify.register(fastifyJwt, {
-    secret: 'supersecret',
-  })
+export default fp(
+  async (fastify) => {
+    await fastify.register(fastifyJwt, {
+      secret: fastify.config.JWT_SECRET,
+    })
 
-  fastify.decorate('authenticate', authenticate)
-})
+    fastify.decorate('authenticate', authenticate)
+  },
+  { dependencies: ['config'] },
+)

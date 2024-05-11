@@ -12,10 +12,7 @@ datasource db {
   shadowDatabaseUrl = env("DATABASE_SHADOW_URL")
 }
 
-model Access {
-  id String @id
-}
-
+// Shopping Mall
 enum CompareMethod {
   EQUAL
   INCLUDES
@@ -54,6 +51,7 @@ model Item {
   isSold       Boolean    @default(false)
 }
 
+// Auth
 model User {
   id           String    @id @default(uuid())
   email        String    @unique
@@ -68,4 +66,14 @@ model Profile {
   user   User    @relation(fields: [id], references: [id])
   name   String
   avatar String?
+}
+
+// CV
+model Access {
+  id String @id
+}
+
+model CV {
+  id   String @id
+  data Json
 }

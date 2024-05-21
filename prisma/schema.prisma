@@ -73,6 +73,12 @@ model Access {
   id String @id
 }
 
+model AccessLog {
+  id         String   @id @default(uuid())
+  accessCode String
+  createdAt  DateTime @default(now())
+}
+
 model CV {
   id   String @id
   data Json

@@ -27,7 +27,17 @@ const cv: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         where: { id: MY_CV_ID },
       })
 
-      return !access ? maskData(cv?.data as CV) : cv?.data
+      const logCvAccess = async (accessCode: string) =>
+        await fastify.prisma.accessLog.create({
+          data: {
+            accessCode,
+          },
+        })
+
+      if (!access) return maskData(cv?.data as CV)
+
+      await logCvAccess(access.id)
+      return cv?.data
     },
   )
 }

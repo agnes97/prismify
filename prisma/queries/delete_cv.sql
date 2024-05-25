@@ -1,0 +1,2 @@
+DELETE FROM "CV"
+WHERE id='cv'

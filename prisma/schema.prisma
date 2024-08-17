@@ -66,6 +66,10 @@ model Profile {
   user   User    @relation(fields: [id], references: [id])
   name   String
   avatar String?
+
+  Rating     Rating[]
+  RatingItem RatingItem[]
+  RatingVote RatingVote[]
 }
 
 // CV
@@ -82,4 +86,37 @@ model AccessLog {
 model CV {
   id   String @id
   data Json
+}
+
+// Rating
+model Rating {
+  id           String       @id
+  title        String
+  hasFavorites Boolean      @default(true)
+  maxRating    Int          @default(5)
+  minRating    Int          @default(0)
+  Participants Profile[]
+  RatingItem   RatingItem[]
+}
+
+model RatingItem {
+  id           String       @id @default(uuid())
+  rating       Rating       @relation(fields: [ratingId], references: [id])
+  ratingId     String
+  title        String
+  data         Json
+  FavoriteBy   Profile?     @relation(fields: [favoriteById], references: [id])
+  favoriteById String?
+  RatingVote   RatingVote[]
+}
+
+model RatingVote {
+  id            String     @id @default(uuid())
+  rating        Int
+  RatingItem    RatingItem @relation(fields: [ratingItemId], references: [id])
+  ratingItemId  String
+  Participant   Profile    @relation(fields: [participantId], references: [id])
+  participantId String
+
+  @@unique([ratingItemId, participantId])
 }

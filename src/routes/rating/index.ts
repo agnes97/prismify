@@ -89,7 +89,7 @@ const rating: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         }))
         .sort(
           (ratingItemA, ratingItemB) =>
-            ratingItemA.finalRating - ratingItemB.finalRating,
+            ratingItemB.finalRating - ratingItemA.finalRating,
         )
 
       const unratedItems = items

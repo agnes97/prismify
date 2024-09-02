@@ -16,10 +16,27 @@ const rating: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
 
   fastify.get('/', async function (_request, _reply) {
     const ratings = await fastify.prisma.rating.findMany({
-      select: { id: true, title: true },
+      select: {
+        id: true,
+        title: true,
+        emoji: true,
+        countryCode: true,
+        startDate: true,
+        endDate: true,
+        Participants: {
+          select: {
+            id: true,
+            name: true,
+            avatar: true,
+          },
+        },
+      },
     })
 
-    return ratings
+    return ratings.map(({ Participants, ...rating }) => ({
+      ...rating,
+      participants: Participants,
+    }))
   })
 
   fastify.withTypeProvider<ZodTypeProvider>().get(
@@ -34,10 +51,15 @@ const rating: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         select: {
           id: true,
           title: true,
+          emoji: true,
+          countryCode: true,
+          startDate: true,
+          endDate: true,
           Participants: {
             select: {
               id: true,
               name: true,
+              avatar: true,
             },
           },
         },

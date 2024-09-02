@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Rating" ADD COLUMN     "countryCode" TEXT NOT NULL DEFAULT 'cz',
+ADD COLUMN     "emoji" TEXT,
+ADD COLUMN     "endDate" TIMESTAMP(3),
+ADD COLUMN     "startDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

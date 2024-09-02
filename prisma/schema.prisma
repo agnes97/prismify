@@ -95,6 +95,10 @@ model Rating {
   hasFavorites Boolean      @default(true)
   maxRating    Int          @default(5)
   minRating    Int          @default(0)
+  countryCode  String       @default("cz")
+  startDate    DateTime     @default(now())
+  endDate      DateTime?
+  emoji        String?
   Participants Profile[]
   RatingItem   RatingItem[]
 }

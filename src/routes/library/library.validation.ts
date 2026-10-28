@@ -15,6 +15,4 @@ export const readingSchema = z.object({
   book: bookSchema,
   // the day it was read, or only the year when the day is forgotten
   read: z.string().regex(/^\d{4}(-\d{2}-\d{2})?$/),
-  // defaults to whoever adds the reading
-  readById: z.string().uuid().optional(),
 })

@@ -47,22 +47,14 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       },
     },
     async function (request, reply) {
-      const { book, read, readById = request.user.id } = request.body
+      // only your own readings can be added
+      const { book, read } = request.body
 
       const parsed = parseRead(read)
       if (!parsed) {
         return reply.status(400).send({
           message: 'The day you read it must be a real day, not in the future',
         })
-      }
-
-      const reader = await fastify.prisma.profile.findUnique({
-        select: { id: true },
-        where: { id: readById },
-      })
-
-      if (!reader) {
-        return reply.status(400).send({ message: 'Reader not found' })
       }
 
       const bookId = book.key.replace('/works/', '')
@@ -95,7 +87,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           data: {
             bookId,
             ...parsed,
-            readById,
+            readById: request.user.id,
             addedById: request.user.id,
           },
         }),

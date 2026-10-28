@@ -138,6 +138,7 @@ model LibraryBook {
   coverUrl    String?
   isbn        String?
   description String?
+  series      String? // shared by the volumes of a series that lie flat in piles, e.g. "Frieren"
   createdAt   DateTime         @default(now())
   Readings    LibraryReading[]
 }

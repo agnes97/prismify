@@ -24,6 +24,7 @@ export const readingSelect = {
       coverUrl: true,
       isbn: true,
       description: true,
+      series: true,
     },
   },
   ReadBy: { select: profileSelect },

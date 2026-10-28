@@ -39,7 +39,7 @@ export const bookEditSchema = z
   })
 
 // Another edition's cover picked from Open Library; an uploaded photo comes as
-// multipart instead and has no body to validate
+// multipart instead, which leaves the body null
 export const coverPickSchema = z
   .object({ coverUrl: openLibraryCover })
-  .optional()
+  .nullish()

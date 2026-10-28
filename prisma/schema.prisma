@@ -70,6 +70,9 @@ model Profile {
   Rating     Rating[]
   RatingItem RatingItem[]
   RatingVote RatingVote[]
+
+  LibraryRead  LibraryReading[] @relation("LibraryReadingsRead")
+  LibraryAdded LibraryReading[] @relation("LibraryReadingsAdded")
 }
 
 // CV
@@ -123,4 +126,33 @@ model RatingVote {
   participantId String
 
   @@unique([ratingItemId, participantId])
+}
+
+// Library
+model LibraryBook {
+  id          String           @id // Open Library work id, e.g. "OL45804W"
+  title       String
+  authors     String[]         @default([])
+  year        Int?
+  pages       Int?
+  coverUrl    String?
+  isbn        String?
+  description String?
+  createdAt   DateTime         @default(now())
+  Readings    LibraryReading[]
+}
+
+model LibraryReading {
+  id        String      @id @default(uuid())
+  Book      LibraryBook @relation(fields: [bookId], references: [id])
+  bookId    String
+  readYear  Int
+  readDate  DateTime?   @db.Date // null when only the year is remembered
+  ReadBy    Profile     @relation("LibraryReadingsRead", fields: [readById], references: [id])
+  readById  String
+  AddedBy   Profile     @relation("LibraryReadingsAdded", fields: [addedById], references: [id])
+  addedById String
+  createdAt DateTime    @default(now())
+
+  @@index([readById])
 }

@@ -137,6 +137,9 @@ model LibraryBook {
   pages       Int?
   coverUrl    String? // mirrored into Vercel Blob, or Open Library's until it is
   coverColor  String? // the cover's dominant colour, e.g. "#4a2a1c", for the spine
+  spineUrl    String? // a photo of the real spine in Vercel Blob, drawn on the shelf instead of cloth
+  spineColor  String? // that photo's dominant colour, which dyes the cloth over the cover's
+  spineRatio  Float? // that photo's width over its height, so it keeps its shape on the shelf
   isbn        String?
   description String?
   series      String? // shared by the volumes of a series that lie flat in piles, e.g. "Frieren"

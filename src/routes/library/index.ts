@@ -1,5 +1,5 @@
 import multipart from '@fastify/multipart'
-import { FastifyPluginAsync } from 'fastify'
+import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
@@ -12,9 +12,11 @@ import {
 } from './library.helper.js'
 import {
   type Cover,
-  deleteCover,
+  deleteImage,
   mirrorCover,
+  type Spine,
   storeCover,
+  storeSpine,
 } from './library.cover.js'
 import {
   bookEditSchema,
@@ -23,16 +25,41 @@ import {
 } from './library.validation.js'
 
 /** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
-const COVER_UPLOAD_LIMIT = 4 * 1024 * 1024
-const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+const PHOTO_UPLOAD_LIMIT = 4 * 1024 * 1024
+const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
 const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   fastify.addHook('onRequest', fastify.authenticate)
   await fastify.register(multipart, {
-    limits: { fileSize: COVER_UPLOAD_LIMIT, files: 1 },
+    limits: { fileSize: PHOTO_UPLOAD_LIMIT, files: 1 },
   })
 
   const blobToken = fastify.config.BLOB_READ_WRITE_TOKEN || undefined
+
+  /** The photo sent as multipart, or the status and message to refuse it with. */
+  async function uploadedPhoto(
+    request: FastifyRequest,
+  ): Promise<Buffer | { status: 400 | 413; message: string }> {
+    const file = await request.file()
+    if (!file || !PHOTO_TYPES.includes(file.mimetype)) {
+      return {
+        status: 400,
+        message: 'The photo must be a JPEG, PNG or WebP image',
+      }
+    }
+
+    try {
+      return await file.toBuffer()
+    } catch (error) {
+      if (error instanceof fastify.multipartErrors.RequestFileTooLargeError) {
+        return {
+          status: 413,
+          message: 'The photo is too big, keep it under 4 MB',
+        }
+      }
+      throw error
+    }
+  }
 
   fastify.withTypeProvider<ZodTypeProvider>().get(
     '/readings',
@@ -225,25 +252,9 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
 
       let cover: Cover | null
       if (request.isMultipart()) {
-        const file = await request.file()
-        if (!file || !COVER_TYPES.includes(file.mimetype)) {
-          return reply
-            .status(400)
-            .send({ message: 'The cover must be a JPEG, PNG or WebP image' })
-        }
-
-        let image: Buffer
-        try {
-          image = await file.toBuffer()
-        } catch (error) {
-          if (
-            error instanceof fastify.multipartErrors.RequestFileTooLargeError
-          ) {
-            return reply
-              .status(413)
-              .send({ message: 'The photo is too big, keep it under 4 MB' })
-          }
-          throw error
+        const image = await uploadedPhoto(request)
+        if (!Buffer.isBuffer(image)) {
+          return reply.status(image.status).send({ message: image.message })
         }
 
         try {
@@ -271,8 +282,90 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       })
 
       if (book.coverUrl !== cover.coverUrl) {
-        await deleteCover(blobToken, book.coverUrl)
+        await deleteImage(blobToken, book.coverUrl)
       }
+
+      return updated
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().put(
+    '/books/:id/spine',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // books are shared by every reader, so anyone can photograph the spine
+      if (!blobToken) {
+        return reply
+          .status(503)
+          .send({ message: 'Spines can’t be changed right now' })
+      }
+
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: { id: true, spineUrl: true },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+      if (!request.isMultipart()) {
+        return reply.status(400).send({ message: 'No photo of the spine' })
+      }
+
+      const image = await uploadedPhoto(request)
+      if (!Buffer.isBuffer(image)) {
+        return reply.status(image.status).send({ message: image.message })
+      }
+
+      let spine: Spine
+      try {
+        spine = await storeSpine(blobToken, book.id, image)
+      } catch {
+        return reply
+          .status(400)
+          .send({ message: 'That photo can’t be read as an image' })
+      }
+
+      const updated = await fastify.prisma.libraryBook.update({
+        select: bookSelect,
+        where: { id: book.id },
+        data: spine,
+      })
+
+      if (book.spineUrl !== spine.spineUrl) {
+        await deleteImage(blobToken, book.spineUrl)
+      }
+
+      return updated
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().delete(
+    '/books/:id/spine',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // back to the cloth one, dyed after the cover
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: { id: true, spineUrl: true },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      const updated = await fastify.prisma.libraryBook.update({
+        select: bookSelect,
+        where: { id: book.id },
+        data: { spineUrl: null, spineColor: null, spineRatio: null },
+      })
+      await deleteImage(blobToken, book.spineUrl)
 
       return updated
     },

@@ -6,9 +6,16 @@ export const OPEN_LIBRARY_COVERS_HOST = 'covers.openlibrary.org'
 const BLOB_HOST_SUFFIX = '.public.blob.vercel-storage.com'
 /** wide enough for the biggest cover the library draws, on a 2x screen */
 const COVER_WIDTH = 600
+/** tall enough for the tallest spine the library draws, on a 2x screen */
+const SPINE_HEIGHT = 640
 const YEAR = 365 * 24 * 60 * 60
 
 export type Cover = { coverUrl: string; coverColor: string }
+export type Spine = {
+  spineUrl: string
+  spineColor: string
+  spineRatio: number
+}
 
 /** the cover is sampled at this size, enough to tell its colours apart */
 const SAMPLE = { width: 40, height: 60 }
@@ -79,24 +86,27 @@ export const isOpenLibraryCover = (url: string) =>
   hostOf(url) === OPEN_LIBRARY_COVERS_HOST
 
 /**
- * Shrinks the image to a WebP cover, works out its dominant colour and puts it
- * in Blob under a name that changes with its content, so it can be cached for good.
+ * Shrinks the image to WebP and puts it in Blob, in `folder`, under a name
+ * that changes with its content, so it can be cached for good. Returns the
+ * image and its URL.
  */
-export async function storeCover(
+async function storeImage(
   token: string,
+  folder: 'covers' | 'spines',
   bookId: string,
   image: Buffer,
-): Promise<Cover> {
+  size: sharp.ResizeOptions,
+): Promise<{ webp: Buffer; url: string }> {
   const webp = await sharp(image)
     // phone photos come sideways without their EXIF turn
     .rotate()
-    .resize({ width: COVER_WIDTH, withoutEnlargement: true })
+    .resize({ ...size, withoutEnlargement: true })
     .webp({ quality: 80 })
     .toBuffer()
 
   const hash = createHash('sha256').update(webp).digest('hex').slice(0, 12)
 
-  const blob = await put(`library/covers/${bookId}-${hash}.webp`, webp, {
+  const blob = await put(`library/${folder}/${bookId}-${hash}.webp`, webp, {
     access: 'public',
     contentType: 'image/webp',
     cacheControlMaxAge: YEAR,
@@ -105,9 +115,38 @@ export async function storeCover(
     token,
   })
 
+  return { webp, url: blob.url }
+}
+
+/** Stores the image as the book's cover, with its colour for the spine. */
+export async function storeCover(
+  token: string,
+  bookId: string,
+  image: Buffer,
+): Promise<Cover> {
+  const { webp, url } = await storeImage(token, 'covers', bookId, image, {
+    width: COVER_WIDTH,
+  })
+  return { coverUrl: url, coverColor: await coverColor(webp) }
+}
+
+/**
+ * Stores a photo of the book's real spine, cropped and stood upright by the
+ * library, with its colour for the cloth around it.
+ */
+export async function storeSpine(
+  token: string,
+  bookId: string,
+  image: Buffer,
+): Promise<Spine> {
+  const { webp, url } = await storeImage(token, 'spines', bookId, image, {
+    height: SPINE_HEIGHT,
+  })
+  const { width = 1, height = 1 } = await sharp(webp).metadata()
   return {
-    coverUrl: blob.url,
-    coverColor: await coverColor(webp),
+    spineUrl: url,
+    spineColor: await coverColor(webp),
+    spineRatio: Math.round((width / height) * 1000) / 1000,
   }
 }
 
@@ -140,8 +179,8 @@ export async function mirrorCover(
   }
 }
 
-/** Removes a replaced cover from Blob; one still on Open Library is left alone. */
-export async function deleteCover(
+/** Removes a replaced cover or spine from Blob; one still on Open Library is left alone. */
+export async function deleteImage(
   token: string | undefined,
   url: string | null,
 ): Promise<void> {

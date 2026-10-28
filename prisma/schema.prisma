@@ -130,21 +130,22 @@ model RatingVote {
 
 // Library
 model LibraryBook {
-  id          String           @id // Open Library work id, e.g. "OL45804W"
-  title       String
-  authors     String[]         @default([])
-  year        Int?
-  pages       Int?
-  coverUrl    String? // mirrored into Vercel Blob, or Open Library's until it is
-  coverColor  String? // the cover's dominant colour, e.g. "#4a2a1c", for the spine
-  spineUrl    String? // a photo of the real spine in Vercel Blob, drawn on the shelf instead of cloth
-  spineColor  String? // that photo's dominant colour, which dyes the cloth over the cover's
-  spineRatio  Float? // that photo's width over its height, so it keeps its shape on the shelf
-  isbn        String?
-  description String?
-  series      String? // shared by the volumes of a series that lie flat in piles, e.g. "Frieren"
-  createdAt   DateTime         @default(now())
-  Readings    LibraryReading[]
+  id           String           @id // Open Library work id, e.g. "OL45804W"
+  title        String
+  authors      String[]         @default([])
+  year         Int?
+  pages        Int?
+  coverUrl     String? // mirrored into Vercel Blob, or Open Library's until it is
+  coverColor   String? // the cover's dominant colour, e.g. "#4a2a1c", for the spine
+  spineUrl     String? // a photo of the real spine in Vercel Blob, drawn on the shelf instead of cloth
+  spineColor   String? // that photo's dominant colour, which dyes the cloth over the cover's
+  spineRatio   Float? // that photo's width over its height, so it keeps its shape on the shelf
+  isbn         String?
+  description  String?
+  series       String? // shared by the volumes of a series that lie flat in piles, e.g. "Frieren"
+  seriesNumber Float? // its place in that series, e.g. 3, or 1.5 for a novella between
+  createdAt    DateTime         @default(now())
+  Readings     LibraryReading[]
 }
 
 model LibraryReading {

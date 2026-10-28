@@ -23,6 +23,7 @@ export const bookSelect = {
   isbn: true,
   description: true,
   series: true,
+  seriesNumber: true,
 } satisfies Prisma.LibraryBookSelect
 
 export const readingSelect = {

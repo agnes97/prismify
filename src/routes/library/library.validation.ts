@@ -33,6 +33,9 @@ export const bookEditSchema = z
     authors: z.array(z.string().trim().min(1)).optional(),
     // an empty one clears it
     description: z.string().trim().nullable().optional(),
+    // an empty one takes it out of its series, and its number with it
+    series: z.string().trim().nullable().optional(),
+    seriesNumber: z.number().positive().nullable().optional(),
   })
   .refine((edit) => Object.values(edit).some((value) => value !== undefined), {
     message: 'Nothing to change',

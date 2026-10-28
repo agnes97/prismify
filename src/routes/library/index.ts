@@ -202,7 +202,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
     async function (request, reply) {
       // books are shared by every reader, so anyone can correct one
-      const { title, authors, description } = request.body
+      const { title, authors, description, series, seriesNumber } = request.body
 
       const book = await fastify.prisma.libraryBook.findUnique({
         select: { id: true },
@@ -220,6 +220,11 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           ...(authors !== undefined && { authors }),
           ...(description !== undefined && {
             description: description || null,
+          }),
+          ...(seriesNumber !== undefined && { seriesNumber }),
+          ...(series !== undefined && {
+            series: series || null,
+            ...(!series && { seriesNumber: null }),
           }),
         },
       })

@@ -70,3 +70,6 @@ dist
 # environment configuration
 .env*
 !.env.template
+
+# Local seed queries with personal data
+prisma/queries/insert_rating_item.sql

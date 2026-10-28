@@ -73,3 +73,4 @@ dist
 
 # Local seed queries with personal data
 prisma/queries/insert_rating_item.sql
+.env*.local

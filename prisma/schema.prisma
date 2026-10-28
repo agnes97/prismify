@@ -135,7 +135,8 @@ model LibraryBook {
   authors     String[]         @default([])
   year        Int?
   pages       Int?
-  coverUrl    String?
+  coverUrl    String? // mirrored into Vercel Blob, or Open Library's until it is
+  coverColor  String? // the cover's dominant colour, e.g. "#4a2a1c", for the spine
   isbn        String?
   description String?
   series      String? // shared by the volumes of a series that lie flat in piles, e.g. "Frieren"

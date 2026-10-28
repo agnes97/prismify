@@ -3,6 +3,8 @@ import { z } from 'zod'
 
 const configSchema = z.object({
   JWT_SECRET: z.string().min(8),
+  // covers stay on Open Library without it
+  BLOB_READ_WRITE_TOKEN: z.string().optional(),
 })
 
 declare module 'fastify' {

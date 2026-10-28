@@ -9,24 +9,25 @@ const profileSelect = {
   avatar: true,
 } satisfies Prisma.ProfileSelect
 
+export const bookSelect = {
+  id: true,
+  title: true,
+  authors: true,
+  year: true,
+  pages: true,
+  coverUrl: true,
+  coverColor: true,
+  isbn: true,
+  description: true,
+  series: true,
+} satisfies Prisma.LibraryBookSelect
+
 export const readingSelect = {
   id: true,
   readYear: true,
   readDate: true,
   createdAt: true,
-  Book: {
-    select: {
-      id: true,
-      title: true,
-      authors: true,
-      year: true,
-      pages: true,
-      coverUrl: true,
-      isbn: true,
-      description: true,
-      series: true,
-    },
-  },
+  Book: { select: bookSelect },
   ReadBy: { select: profileSelect },
   AddedBy: { select: profileSelect },
 } satisfies Prisma.LibraryReadingSelect

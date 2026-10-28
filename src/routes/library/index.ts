@@ -1,17 +1,38 @@
+import multipart from '@fastify/multipart'
 import { FastifyPluginAsync } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
 import {
+  bookSelect,
   fetchDescription,
   parseRead,
   readingSelect,
   toReading,
 } from './library.helper.js'
-import { readingSchema } from './library.validation.js'
+import {
+  type Cover,
+  deleteCover,
+  mirrorCover,
+  storeCover,
+} from './library.cover.js'
+import {
+  bookEditSchema,
+  coverPickSchema,
+  readingSchema,
+} from './library.validation.js'
+
+/** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
+const COVER_UPLOAD_LIMIT = 4 * 1024 * 1024
+const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
 const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   fastify.addHook('onRequest', fastify.authenticate)
+  await fastify.register(multipart, {
+    limits: { fileSize: COVER_UPLOAD_LIMIT, files: 1 },
+  })
+
+  const blobToken = fastify.config.BLOB_READ_WRITE_TOKEN || undefined
 
   fastify.withTypeProvider<ZodTypeProvider>().get(
     '/readings',
@@ -65,7 +86,14 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       })
 
       // fetched outside the transaction, and only for a book not on any shelf yet
-      const description = storedBook ? null : await fetchDescription(bookId)
+      const [description, cover] = storedBook
+        ? [null, null]
+        : await Promise.all([
+            fetchDescription(bookId),
+            book.coverUrl
+              ? mirrorCover(blobToken, bookId, book.coverUrl)
+              : null,
+          ])
 
       const [, reading] = await fastify.prisma.$transaction([
         fastify.prisma.libraryBook.upsert({
@@ -76,11 +104,14 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
             authors: book.authors,
             year: book.year ?? null,
             pages: book.pages ?? null,
-            coverUrl: book.coverUrl ?? null,
+            // Open Library's own until the backfill mirrors it
+            coverUrl: cover?.coverUrl ?? book.coverUrl ?? null,
+            coverColor: cover?.coverColor ?? null,
             isbn: book.isbn ?? null,
             description,
           },
-          update: {},
+          // the reader may have corrected the title and authors before adding it
+          update: { title: book.title, authors: book.authors },
         }),
         fastify.prisma.libraryReading.create({
           select: readingSelect,
@@ -94,6 +125,156 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       ])
 
       return reply.status(201).send(toReading(reading))
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().delete(
+    '/readings/:id',
+    {
+      schema: {
+        params: z.object({ id: z.string().uuid() }),
+      },
+    },
+    async function (request, reply) {
+      const reading = await fastify.prisma.libraryReading.findUnique({
+        select: { readById: true, bookId: true },
+        where: { id: request.params.id },
+      })
+
+      if (!reading) {
+        return reply.status(404).send({ message: 'Reading not found' })
+      }
+      // only your own readings can be taken off the shelf
+      if (reading.readById !== request.user.id) {
+        return reply
+          .status(403)
+          .send({ message: 'Only the reader can remove this book' })
+      }
+
+      await fastify.prisma.$transaction([
+        fastify.prisma.libraryReading.delete({
+          where: { id: request.params.id },
+        }),
+        // the book goes too once nobody has it on a shelf
+        fastify.prisma.libraryBook.deleteMany({
+          where: { id: reading.bookId, Readings: { none: {} } },
+        }),
+      ])
+
+      return reply.status(204).send()
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().patch(
+    '/books/:id',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+        body: bookEditSchema,
+      },
+    },
+    async function (request, reply) {
+      // books are shared by every reader, so anyone can correct one
+      const { title, authors, description } = request.body
+
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: { id: true },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      return fastify.prisma.libraryBook.update({
+        select: bookSelect,
+        where: { id: book.id },
+        data: {
+          ...(title !== undefined && { title }),
+          ...(authors !== undefined && { authors }),
+          ...(description !== undefined && {
+            description: description || null,
+          }),
+        },
+      })
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().put(
+    '/books/:id/cover',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+        body: coverPickSchema,
+      },
+    },
+    async function (request, reply) {
+      // books are shared by every reader, so anyone can give one a better cover
+      if (!blobToken) {
+        return reply
+          .status(503)
+          .send({ message: 'Covers can’t be changed right now' })
+      }
+
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: { id: true, coverUrl: true },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      let cover: Cover | null
+      if (request.isMultipart()) {
+        const file = await request.file()
+        if (!file || !COVER_TYPES.includes(file.mimetype)) {
+          return reply
+            .status(400)
+            .send({ message: 'The cover must be a JPEG, PNG or WebP image' })
+        }
+
+        let image: Buffer
+        try {
+          image = await file.toBuffer()
+        } catch (error) {
+          if (
+            error instanceof fastify.multipartErrors.RequestFileTooLargeError
+          ) {
+            return reply
+              .status(413)
+              .send({ message: 'The photo is too big, keep it under 4 MB' })
+          }
+          throw error
+        }
+
+        try {
+          cover = await storeCover(blobToken, book.id, image)
+        } catch {
+          return reply
+            .status(400)
+            .send({ message: 'That photo can’t be read as an image' })
+        }
+      } else if (request.body) {
+        cover = await mirrorCover(blobToken, book.id, request.body.coverUrl)
+        if (!cover) {
+          return reply
+            .status(400)
+            .send({ message: 'That cover can’t be fetched from Open Library' })
+        }
+      } else {
+        return reply.status(400).send({ message: 'No cover to put on it' })
+      }
+
+      const updated = await fastify.prisma.libraryBook.update({
+        select: bookSelect,
+        where: { id: book.id },
+        data: cover,
+      })
+
+      if (book.coverUrl !== cover.coverUrl) {
+        await deleteCover(blobToken, book.coverUrl)
+      }
+
+      return updated
     },
   )
 

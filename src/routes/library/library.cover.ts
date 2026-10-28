@@ -10,7 +10,58 @@ const YEAR = 365 * 24 * 60 * 60
 
 export type Cover = { coverUrl: string; coverColor: string }
 
-const hex = (value: number) => value.toString(16).padStart(2, '0')
+/** the cover is sampled at this size, enough to tell its colours apart */
+const SAMPLE = { width: 40, height: 60 }
+/** how far apart a colour's channels must be to count as a colour, not a grey */
+const MIN_CHROMA = 48
+/** the share of a cover that has to be colourful for a colour to win over its greys */
+const MIN_COLOURFUL = 0.2
+
+const hex = (value: number) => Math.round(value).toString(16).padStart(2, '0')
+
+/**
+ * The colour the cover reads as from across the room: its most common colour,
+ * averaged within an 8×8×8 bucket so it stays true. White borders, black
+ * lettering and shadows lose to the colours of the picture, unless the cover
+ * is hardly colourful at all and its grey is what it is.
+ *
+ * (sharp's own `dominant` counts the greys too, so a red cover with a black
+ * title band comes out black.)
+ */
+export async function coverColor(image: Buffer): Promise<string> {
+  const data = await sharp(image)
+    .resize({ ...SAMPLE, fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer()
+
+  const buckets = new Map<number, { count: number; sums: number[] }>()
+  for (const [at, value] of data.entries()) {
+    const pixel = at - (at % 3)
+    const key =
+      (data.readUInt8(pixel) >> 5) * 64 +
+      (data.readUInt8(pixel + 1) >> 5) * 8 +
+      (data.readUInt8(pixel + 2) >> 5)
+    let bucket = buckets.get(key)
+    if (!bucket) buckets.set(key, (bucket = { count: 0, sums: [0, 0, 0] }))
+    if (at === pixel) bucket.count++
+    bucket.sums[at % 3] = (bucket.sums[at % 3] ?? 0) + value
+  }
+
+  const colours = [...buckets.values()].map(({ count, sums }) => {
+    const mean = sums.map((sum) => sum / count)
+    const colourful = Math.max(...mean) - Math.min(...mean) >= MIN_CHROMA
+    return { count, mean, colourful }
+  })
+  const colourful = colours.filter((colour) => colour.colourful)
+  const share =
+    colourful.reduce((sum, { count }) => sum + count, 0) / (data.length / 3)
+
+  const [top] = (share >= MIN_COLOURFUL ? colourful : colours).sort(
+    (a, b) => b.count - a.count,
+  )
+  return `#${(top?.mean ?? [0, 0, 0]).map(hex).join('')}`
+}
 
 const hostOf = (url: string) => {
   try {
@@ -43,7 +94,6 @@ export async function storeCover(
     .webp({ quality: 80 })
     .toBuffer()
 
-  const { dominant } = await sharp(webp).stats()
   const hash = createHash('sha256').update(webp).digest('hex').slice(0, 12)
 
   const blob = await put(`library/covers/${bookId}-${hash}.webp`, webp, {
@@ -57,7 +107,7 @@ export async function storeCover(
 
   return {
     coverUrl: blob.url,
-    coverColor: `#${hex(dominant.r)}${hex(dominant.g)}${hex(dominant.b)}`,
+    coverColor: await coverColor(webp),
   }
 }
 

@@ -11,6 +11,7 @@
     "postinstall": "prisma generate",
     "dev": "tsc && concurrently -k -p \"[{name}]\" -n \"TypeScript,App\" -c \"yellow.bold,cyan.bold\" \"tsc -w\" \"fastify start --ignore-watch=.ts$ -w -l info -P dist/src/app.js\"",
     "library:mirror-covers": "tsc && dotenv -- node dist/scripts/mirror-covers.js",
+    "library:recolor-covers": "tsc && dotenv -- node dist/scripts/recolor-covers.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

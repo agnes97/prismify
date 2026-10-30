@@ -29,6 +29,11 @@ export type SpineCandidate = {
 
 /** how many photos the search may suggest, and how many are looked at */
 const MAX_FOUND = 10
+/**
+ * how many searches and page visits the search may make; left to itself it
+ * makes some twenty and takes minutes, for photos the first few turn up
+ */
+const MAX_SEARCH_CALLS = 6
 /** a found photo bigger than this isn't a photo of a book */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 /** photos are shrunk to this before the models see them, which is plenty to read a spine */
@@ -312,7 +317,9 @@ export async function startSpineSearch(
     model: OPENAI_TEXT_MODEL,
     background: true,
     metadata: { step: 'search' satisfies Step, book: bookId },
+    reasoning: { effort: 'low' },
     tools: [{ type: 'web_search' }],
+    max_tool_calls: MAX_SEARCH_CALLS,
     input: [
       {
         role: 'user',
@@ -324,6 +331,7 @@ export async function startSpineSearch(
               coverJpeg &&
                 'The attached image is its cover: prefer this same edition.',
               'Good sources: bookshop and publisher listings with angled or 3D product shots, back-and-spine images, photos of the book on a shelf, second-hand listings with several photos.',
+              'Be quick: a few searches are enough, stop once you have some good photos.',
               `Give up to ${MAX_FOUND} direct image URLs (the image file itself, e.g. ending in .jpg or served by an image CDN, not the page), each with the page it is on. Only include URLs you actually saw in search results or pages; never guess one.`,
             ]
               .filter(Boolean)
@@ -364,10 +372,21 @@ export async function startSpineSearch(
   return working(search.id, 'search')
 }
 
-/** The photos a finished search found, each once, as many as are looked at. */
+/**
+ * eBay photos are found as small thumbnails, e.g. …/s-l140.webp, too small to
+ * read a spine from; the same photo is served large as …/s-l1600.webp.
+ */
+const largest = (imageUrl: string) =>
+  /^https:\/\/i\.ebayimg\.com\//.test(imageUrl)
+    ? imageUrl.replace(/\/s-l\d+\./, '/s-l1600.')
+    : imageUrl
+
+/** The photos a finished search found, each once and at their largest, as many as are looked at. */
 async function foundPhotos(openai: OpenAI, searchId: string) {
   const search = await openai.responses.retrieve(searchId)
-  const found = foundSchema.parse(JSON.parse(search.output_text)).candidates
+  const found = foundSchema
+    .parse(JSON.parse(search.output_text))
+    .candidates.map((c) => ({ ...c, imageUrl: largest(c.imageUrl) }))
   return [...new Map(found.map((c) => [c.imageUrl, c])).values()].slice(
     0,
     MAX_FOUND,

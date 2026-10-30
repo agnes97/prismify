@@ -14,6 +14,14 @@ export type SpineBook = {
   authors: string[]
   year: number | null
   isbn: string | null
+  series: string | null
+  seriesNumber: number | null
+}
+
+/** another volume of the book's series, whose spine the drawing follows */
+export type SeriesSpine = {
+  seriesNumber: number | null
+  spine: Buffer
 }
 
 export type SpineCandidate = {
@@ -25,6 +33,8 @@ export type SpineCandidate = {
   preview: string
   /** what the photo shows, in a few words */
   note: string
+  /** whether ChatGPT thinks it shows the spine well enough to draw it after */
+  showsSpine: boolean
 }
 
 /** how many photos the search may suggest, and how many are looked at */
@@ -38,22 +48,77 @@ const MAX_SEARCH_CALLS = 6
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 /** photos are shrunk to this before the models see them, which is plenty to read a spine */
 const LOOK_SIDE = 1024
-const PREVIEW_HEIGHT = 240
+/** the found photos are shown one at a time, big enough to read the spine on */
+const PREVIEW_HEIGHT = 480
 /** the drawn spine is kept this tall; the shelf stores it at half */
 const DRAWN_HEIGHT = 1280
 
-const describe = ({ title, authors, year, isbn }: SpineBook) =>
+const describe = ({
+  title,
+  authors,
+  year,
+  isbn,
+  series,
+  seriesNumber,
+}: SpineBook) =>
   [
     `"${title}"`,
     authors.length > 0 && `by ${authors.join(', ')}`,
     year && `(${year})`,
     isbn && `ISBN ${isbn}`,
+    series &&
+      `${seriesNumber === null ? 'a volume' : `volume ${seriesNumber}`} of the series "${series}"`,
   ]
     .filter(Boolean)
     .join(' ')
 
 const dataUrl = (jpeg: Buffer) =>
   `data:image/jpeg;base64,${jpeg.toString('base64')}`
+
+/** how much of the cover's width along each side is sampled for the colour the spine joins */
+const EDGE_SHARE = 0.04
+
+const hex = (value: number) => Math.round(value).toString(16).padStart(2, '0')
+
+/**
+ * The colour along each side of the cover, where the spine joins it: the most
+ * common one in a narrow strip, averaged within a 16×16×16 bucket so it stays
+ * true. A white cover reads white here, however the photo of its spine is lit.
+ */
+async function coverEdges(
+  cover: Buffer,
+): Promise<{ left: string; right: string }> {
+  const upright = await sharp(cover)
+    .rotate()
+    .removeAlpha()
+    .toBuffer({ resolveWithObject: true })
+  const { width, height } = upright.info
+  const strip = Math.max(1, Math.round(width * EDGE_SHARE))
+
+  const edge = async (left: number) => {
+    const data = await sharp(upright.data)
+      .extract({ left, top: 0, width: strip, height })
+      .resize({ width: 4, height: 64, fit: 'fill' })
+      .raw()
+      .toBuffer()
+    const buckets = new Map<number, { count: number; sums: number[] }>()
+    for (let pixel = 0; pixel < data.length; pixel += 3) {
+      const rgb = [0, 1, 2].map((channel) => data.readUInt8(pixel + channel))
+      const key = rgb.reduce((key, value) => key * 16 + (value >> 4), 0)
+      const bucket = buckets.get(key) ?? { count: 0, sums: [0, 0, 0] }
+      buckets.set(key, {
+        count: bucket.count + 1,
+        sums: bucket.sums.map((sum, channel) => sum + (rgb[channel] ?? 0)),
+      })
+    }
+    const [top = { count: 1, sums: [0, 0, 0] }] = [...buckets.values()].sort(
+      (a, b) => b.count - a.count,
+    )
+    return `#${top.sums.map((sum) => hex(sum / top.count)).join('')}`
+  }
+
+  return { left: await edge(0), right: await edge(width - strip) }
+}
 
 /** Turns any image upright and shrinks it to a JPEG no longer than `side`. */
 const shrink = (image: Buffer, side: number) =>
@@ -304,12 +369,16 @@ const coverImage = (coverJpeg: Buffer | null) =>
       ]
     : []
 
-/** Starts ChatGPT searching the web for photos that show the book's spine. */
+/**
+ * Starts ChatGPT searching the web for photos that show the book's spine,
+ * other than those the reader has already turned down (`seen`).
+ */
 export async function startSpineSearch(
   openai: OpenAI,
   bookId: string,
   book: SpineBook,
   cover: Buffer | null,
+  seen: string[] = [],
 ): Promise<SpineJob> {
   const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
 
@@ -331,6 +400,9 @@ export async function startSpineSearch(
               coverJpeg &&
                 'The attached image is its cover: prefer this same edition.',
               'Good sources: bookshop and publisher listings with angled or 3D product shots, back-and-spine images, photos of the book on a shelf, second-hand listings with several photos.',
+              'Few photos are labelled as spines, so don’t only search for the word spine: search for the book itself, its 3D cover or product shots and its listings, and keep photos where the spine shows tilted, at an angle or in perspective beside the cover. Those are as good as a straight one, as it gets straightened afterwards.',
+              seen.length > 0 &&
+                `The reader has already been shown these photos and none was right; find different ones, never these:\n${seen.join('\n')}`,
               'Be quick: a few searches are enough, stop once you have some good photos.',
               `Give up to ${MAX_FOUND} direct image URLs (the image file itself, e.g. ending in .jpg or served by an image CDN, not the page), each with the page it is on. Only include URLs you actually saw in search results or pages; never guess one.`,
             ]
@@ -442,7 +514,8 @@ async function startVetting(
               coverJpeg
                 ? 'The first image is its cover; the photos follow, numbered from 0.'
                 : 'The photos are numbered from 0.',
-              'For each photo, say whether the book’s spine is visible clearly enough to read its lettering (showsSpine), whether it is the same edition as the cover, matching its design (sameEdition), and in a few words what the photo shows (note).',
+              'For each photo, say whether the book’s spine is visible well enough to redraw it (showsSpine), whether it is the same edition as the cover, matching its design (sameEdition), and in a few words what the photo shows (note).',
+              'A spine that is tilted, seen at an angle or in perspective, narrow beside the cover in a 3D shot, or on a shelf among other books still shows the spine, as it gets straightened afterwards; count it when its colours and design can be made out and most of its lettering read. Only a spine that is hidden, cut off, or too small or blurred to tell its design does not.',
             ].join('\n'),
           },
           ...coverImage(coverJpeg),
@@ -451,7 +524,7 @@ async function startVetting(
             {
               type: 'input_image' as const,
               image_url: dataUrl(jpeg),
-              detail: 'auto' as const,
+              detail: 'high' as const,
             },
           ]),
         ],
@@ -490,7 +563,11 @@ async function startVetting(
   return working(vetting.id, 'vetting', true, downloaded.length)
 }
 
-/** The photos ChatGPT kept, the cover's own edition first, each with a small preview. */
+/**
+ * Every photo ChatGPT looked at, each with a small preview, for the reader to
+ * go through one by one: those showing the spine first, the cover's own
+ * edition before others, and those it doubted last, as it may be wrong.
+ */
 async function vettedPhotos(
   openai: OpenAI,
   vetting: OpenAI.Responses.Response,
@@ -500,17 +577,18 @@ async function vettedPhotos(
   const shown = (metadata['photos'] ?? '').split(',').map(Number)
   const { verdicts } = verdictSchema.parse(JSON.parse(vetting.output_text))
 
+  const rank = ({ showsSpine, sameEdition }: (typeof verdicts)[number]) =>
+    2 * Number(showsSpine) + Number(sameEdition)
   const kept = verdicts
-    .filter((verdict) => verdict.showsSpine)
-    .sort((a, b) => Number(b.sameEdition) - Number(a.sameEdition))
-    .flatMap(({ index, note }) => {
+    .sort((a, b) => rank(b) - rank(a))
+    .flatMap(({ index, note, showsSpine }) => {
       const photo = photos[shown[index] ?? -1]
-      return photo ? [{ ...photo, note }] : []
+      return photo ? [{ ...photo, note, showsSpine }] : []
     })
 
   // fetched again for the previews, as nothing was kept between the steps
   const candidates = await Promise.all(
-    kept.map(async ({ imageUrl, pageUrl, note }) => {
+    kept.map(async ({ imageUrl, pageUrl, note, showsSpine }) => {
       const image = await fetchImage(imageUrl)
       if (!image) return null
       try {
@@ -520,7 +598,13 @@ async function vettedPhotos(
           .flatten({ background: '#ffffff' })
           .jpeg({ quality: 75 })
           .toBuffer()
-        return { imageUrl, pageUrl, preview: dataUrl(preview), note }
+        return {
+          imageUrl,
+          pageUrl,
+          preview: dataUrl(preview),
+          note,
+          showsSpine,
+        }
       } catch {
         return null
       }
@@ -533,7 +617,8 @@ async function vettedPhotos(
 
 /**
  * Starts ChatGPT painting the book's spine straight on and sharp, after a photo
- * that shows it (`reference`) and the cover it has to join.
+ * that shows it (`reference`), the cover it has to join, and the spines of
+ * other volumes in its series it should look like.
  */
 export async function startSpineDrawing(
   openai: OpenAI,
@@ -541,9 +626,23 @@ export async function startSpineDrawing(
   book: SpineBook,
   reference: Buffer,
   cover: Buffer | null,
+  siblings: SeriesSpine[] = [],
 ): Promise<SpineJob> {
-  const images = [reference, ...(cover ? [cover] : [])]
+  const images = [
+    reference,
+    ...(cover ? [cover] : []),
+    ...siblings.map(({ spine }) => spine),
+  ]
   const jpegs = await Promise.all(images.map((image) => shrink(image, 1536)))
+  const edges = cover && (await coverEdges(cover))
+  // the volumes' spines follow the photo and the cover, counted from 1
+  const firstSibling = cover ? 3 : 2
+  const volumes = siblings
+    .map(
+      ({ seriesNumber }, index) =>
+        `image ${firstSibling + index}${seriesNumber === null ? '' : ` (volume ${seriesNumber})`}`,
+    )
+    .join(', ')
 
   const drawing = await openai.responses.create({
     model: OPENAI_TEXT_MODEL,
@@ -569,10 +668,15 @@ export async function startSpineDrawing(
             type: 'input_text',
             text: [
               `Draw the spine of the book ${describe(book)}, as a flat, straight-on scan.`,
-              'The first image is a photo that shows this spine, maybe at an angle or blurred.',
+              'The first image is a photo that shows this spine, maybe tilted, at an angle, in perspective or blurred.',
               cover &&
-                'The second image is its front cover; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
+                'The second image is its front cover, as it is chosen for this book; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
+              edges &&
+                `Measured on the cover, its colour along the left edge is ${edges.left} and along the right edge ${edges.right}. The spine joins the left edge, or the right one for a book read right to left, such as manga. Wherever the spine shares the cover’s background, use that exact colour: the photo’s lighting, shadows and camera tint the colours, so a white cover may look cream or beige and a black one grey in it, but the spine is printed in the cover’s own colours. Only where the photo clearly shows a different colour than the cover, such as a coloured band, keep that colour, matched in the cover’s brightness and tint.`,
+              siblings.length > 0 &&
+                `The spines of other volumes of the same series follow: ${volumes}. Series share a design, so wherever this photo shows the same kind of element, draw it the way they do: the spine colour and its bands, where and how the volume number sits, the series title, the author’s name, the publisher logo and their fonts. Use this volume’s own number and title from the photo, never theirs, and where the photo clearly differs from them, keep the photo.`,
               'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
+              'Straighten it by its own edges. Everything in the photo outside the spine’s edges is not part of the book: shelf, wall, table, neighbouring books, and the wedges of background a tilted spine leaves in the corners of the photo. Never carry any of it into the drawing, not even as a thin strip or triangle along a side, the top or the bottom; the spine’s own colour and design run right up to every edge. Where the photo cuts a part of the spine off, continue the spine’s own design there.',
               'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
             ]
               .filter(Boolean)

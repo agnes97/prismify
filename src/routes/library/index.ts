@@ -30,6 +30,8 @@ import {
 import {
   fetchImage,
   followSpineJob,
+  type SeriesSpine,
+  type SpineBook,
   type SpineJob,
   SpineJobError,
   startSpineDrawing,
@@ -41,11 +43,14 @@ import {
   readingSchema,
   spineDrawSchema,
   spineJobSchema,
+  spineSearchSchema,
 } from './library.validation.js'
 
 /** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
 const PHOTO_UPLOAD_LIMIT = 4 * 1024 * 1024
 const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+/** how many other volumes' spines a drawing follows, the nearest in the series */
+const SERIES_SPINES = 2
 
 const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   fastify.addHook('onRequest', fastify.authenticate)
@@ -107,6 +112,8 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         authors: true,
         year: true,
         isbn: true,
+        series: true,
+        seriesNumber: true,
         coverUrl: true,
       },
       where: { id },
@@ -118,6 +125,36 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       book: details,
       cover: coverUrl ? await fetchImage(coverUrl) : null,
     }
+  }
+
+  /**
+   * The photographed spines of the volumes nearest the book in its series, for
+   * the drawing to follow their shared design; none when it has no series.
+   */
+  async function seriesSpines(
+    id: string,
+    { series, seriesNumber }: SpineBook,
+  ): Promise<SeriesSpine[]> {
+    if (!series) return []
+    const volumes = await fastify.prisma.libraryBook.findMany({
+      select: { seriesNumber: true, spineUrl: true },
+      where: { series, id: { not: id }, spineUrl: { not: null } },
+    })
+    const distance = (number: number | null) =>
+      seriesNumber === null || number === null
+        ? Infinity
+        : Math.abs(number - seriesNumber)
+    const nearest = volumes
+      .sort((a, b) => distance(a.seriesNumber) - distance(b.seriesNumber))
+      .slice(0, SERIES_SPINES)
+
+    const spines = await Promise.all(
+      nearest.map(async ({ seriesNumber, spineUrl }) => {
+        const spine = spineUrl && (await fetchImage(spineUrl))
+        return spine ? { seriesNumber, spine } : null
+      }),
+    )
+    return spines.filter((spine): spine is SeriesSpine => spine !== null)
   }
 
   /** The photo sent as multipart, or the status and message to refuse it with. */
@@ -437,6 +474,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     {
       schema: {
         params: z.object({ id: z.string() }),
+        body: spineSearchSchema,
       },
     },
     async function (request, reply) {
@@ -458,6 +496,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           request.params.id,
           found.book,
           found.cover,
+          request.body?.seen,
         )
       } catch (error) {
         request.log.warn(error, 'spine search failed')
@@ -513,6 +552,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           found.book,
           reference,
           found.cover,
+          await seriesSpines(request.params.id, found.book),
         )
       } catch (error) {
         request.log.warn(error, 'spine drawing failed')

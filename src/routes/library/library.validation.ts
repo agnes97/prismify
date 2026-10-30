@@ -2,6 +2,9 @@ import { z } from 'zod'
 
 import { isOpenLibraryCover } from './library.cover.js'
 
+// how many turned-down photos a spine search is told to skip, a few searches' worth
+const MAX_SEEN = 40
+
 // only Open Library's covers are fetched and mirrored
 const openLibraryCover = z
   .string()
@@ -49,6 +52,11 @@ export const coverPickSchema = z
 
 // A photo found on the web to draw the spine after; the reader's own photo
 // comes as multipart instead, which leaves the body null
+// the photos the reader already turned down, for a search to find others
+export const spineSearchSchema = z
+  .object({ seen: z.array(z.string().url()).max(MAX_SEEN) })
+  .nullish()
+
 export const spineDrawSchema = z
   .object({ imageUrl: z.string().url() })
   .nullish()

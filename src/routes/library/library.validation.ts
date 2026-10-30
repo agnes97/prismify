@@ -52,3 +52,6 @@ export const coverPickSchema = z
 export const spineDrawSchema = z
   .object({ imageUrl: z.string().url() })
   .nullish()
+
+// a search or drawing running at OpenAI, by the id of the response running it
+export const spineJobSchema = z.string().regex(/^resp_\w+$/)

@@ -2,7 +2,7 @@ import multipart from '@fastify/multipart'
 import { AiProvider } from '@prisma/client'
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
-import type OpenAI from 'openai'
+import OpenAI from 'openai'
 import { z } from 'zod'
 
 import {
@@ -27,12 +27,20 @@ import {
   storeCover,
   storeSpine,
 } from './library.cover.js'
-import { drawSpine, fetchImage, findSpines } from './library.spine.js'
+import {
+  fetchImage,
+  followSpineJob,
+  type SpineJob,
+  SpineJobError,
+  startSpineDrawing,
+  startSpineSearch,
+} from './library.spine.js'
 import {
   bookEditSchema,
   coverPickSchema,
   readingSchema,
   spineDrawSchema,
+  spineJobSchema,
 } from './library.validation.js'
 
 /** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
@@ -49,11 +57,13 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   const aiSecret = keysSecret(fastify.config.AI_KEYS_SECRET)
 
   /**
-   * An OpenAI client on the reader's own key, counted against their allowance,
-   * or the status and message to refuse with.
+   * An OpenAI client on the reader's own key, or the status and message to
+   * refuse with. Starting a search or drawing is `counted` against their
+   * allowance; looking in on one isn't.
    */
   async function readersOpenai(
     request: FastifyRequest,
+    counted: boolean,
   ): Promise<OpenAI | { status: 409 | 429 | 503; message: string }> {
     if (!aiSecret) {
       return { status: 503, message: 'AI spines aren’t available right now' }
@@ -65,12 +75,28 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         message: 'Connect ChatGPT under AI Keys in the menu first',
       }
     }
+    if (!counted) return openai
+
     const refusal = await useAllowance(
       fastify.prisma,
       request.user.id,
       AiProvider.OPENAI,
     )
     return refusal ? { status: 429, message: refusal } : openai
+  }
+
+  /** What to tell the reader when a step of finding or drawing a spine fails. */
+  function spineProblem(error: unknown): {
+    status: 404 | 502
+    message: string
+  } {
+    if (error instanceof SpineJobError) {
+      return { status: 502, message: error.message }
+    }
+    if (error instanceof OpenAI.NotFoundError) {
+      return { status: 404, message: 'That search is gone, start again' }
+    }
+    return { status: 502, message: openaiProblem(error) }
   }
 
   /** The book as the spine is looked for and drawn after, with its cover, or null when there is no such book. */
@@ -414,8 +440,9 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       },
     },
     async function (request, reply) {
-      // searched on the reader's own OpenAI key; nothing is stored
-      const openai = await readersOpenai(request)
+      // searched on the reader's own OpenAI key in the background; the
+      // library follows it at /books/:id/spine/jobs/:job and nothing is stored
+      const openai = await readersOpenai(request, true)
       if (!('responses' in openai)) {
         return reply.status(openai.status).send({ message: openai.message })
       }
@@ -426,10 +453,16 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       try {
-        return await findSpines(openai, found.book, found.cover)
+        return await startSpineSearch(
+          openai,
+          request.params.id,
+          found.book,
+          found.cover,
+        )
       } catch (error) {
         request.log.warn(error, 'spine search failed')
-        return reply.status(502).send({ message: openaiProblem(error) })
+        const problem = spineProblem(error)
+        return reply.status(problem.status).send({ message: problem.message })
       }
     },
   )
@@ -443,9 +476,9 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       },
     },
     async function (request, reply) {
-      // drawn on the reader's own OpenAI key and only shown; the library saves
-      // it through PUT /books/:id/spine once the reader likes it
-      const openai = await readersOpenai(request)
+      // drawn on the reader's own OpenAI key in the background and only shown;
+      // the library saves it through PUT /books/:id/spine once the reader likes it
+      const openai = await readersOpenai(request, true)
       if (!('responses' in openai)) {
         return reply.status(openai.status).send({ message: openai.message })
       }
@@ -474,16 +507,47 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       try {
-        const spine = await drawSpine(
+        return await startSpineDrawing(
           openai,
+          request.params.id,
           found.book,
           reference,
           found.cover,
         )
-        return { image: spine.toString('base64') }
       } catch (error) {
         request.log.warn(error, 'spine drawing failed')
-        return reply.status(502).send({ message: openaiProblem(error) })
+        const problem = spineProblem(error)
+        return reply.status(problem.status).send({ message: problem.message })
+      }
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().get(
+    '/books/:id/spine/jobs/:job',
+    {
+      schema: {
+        params: z.object({ id: z.string(), job: spineJobSchema }),
+      },
+    },
+    async function (request, reply): Promise<SpineJob | undefined> {
+      // looking in on a search or drawing isn't counted against the allowance;
+      // only the reader's own key can read it
+      const openai = await readersOpenai(request, false)
+      if (!('responses' in openai)) {
+        return reply.status(openai.status).send({ message: openai.message })
+      }
+
+      const { id, job } = request.params
+      try {
+        return await followSpineJob(openai, id, job, async () => {
+          const found = await spineBook(id)
+          if (!found) throw new SpineJobError('Book not found')
+          return found
+        })
+      } catch (error) {
+        request.log.warn(error, 'spine job failed')
+        const problem = spineProblem(error)
+        return reply.status(problem.status).send({ message: problem.message })
       }
     },
   )

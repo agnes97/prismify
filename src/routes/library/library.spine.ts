@@ -3,7 +3,6 @@ import type { IncomingMessage } from 'node:http'
 import { request } from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
 import type OpenAI from 'openai'
-import { toFile } from 'openai'
 import sharp from 'sharp'
 import { z } from 'zod'
 
@@ -252,19 +251,47 @@ const verdictSchema = z.object({
 })
 
 /**
- * Asks ChatGPT to search the web for photos that show the book's spine, then
- * downloads them and has it look at each beside the cover, keeping those that
- * really show the spine, the cover's own edition first.
+ * Finding and drawing a spine take longer than a Vercel function may run, so
+ * each runs at OpenAI in the background as a response the library polls for,
+ * by its id. Only the reader's own key can read it. Its metadata says which
+ * step it is and carries what the next step needs.
  */
-export async function findSpines(
+export type SpineJob =
+  | { status: 'working'; job: string }
+  | { status: 'done'; candidates: SpineCandidate[] }
+  | { status: 'done'; image: string }
+
+type Step = 'search' | 'vetting' | 'drawing'
+
+/** A step that ran but came to nothing, with what to tell the reader. */
+export class SpineJobError extends Error {}
+
+const working = (job: string): SpineJob => ({ status: 'working', job })
+
+const coverImage = (coverJpeg: Buffer | null) =>
+  coverJpeg
+    ? [
+        {
+          type: 'input_image' as const,
+          image_url: dataUrl(coverJpeg),
+          detail: 'low' as const,
+        },
+      ]
+    : []
+
+/** Starts ChatGPT searching the web for photos that show the book's spine. */
+export async function startSpineSearch(
   openai: OpenAI,
+  bookId: string,
   book: SpineBook,
   cover: Buffer | null,
-): Promise<SpineCandidate[]> {
+): Promise<SpineJob> {
   const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
 
   const search = await openai.responses.create({
     model: OPENAI_TEXT_MODEL,
+    background: true,
+    metadata: { step: 'search' satisfies Step, book: bookId },
     tools: [{ type: 'web_search' }],
     input: [
       {
@@ -282,15 +309,7 @@ export async function findSpines(
               .filter(Boolean)
               .join('\n'),
           },
-          ...(coverJpeg
-            ? [
-                {
-                  type: 'input_image' as const,
-                  image_url: dataUrl(coverJpeg),
-                  detail: 'low' as const,
-                },
-              ]
-            : []),
+          ...coverImage(coverJpeg),
         ],
       },
     ],
@@ -322,25 +341,57 @@ export async function findSpines(
     },
   })
 
+  return working(search.id)
+}
+
+/** The photos a finished search found, each once, as many as are looked at. */
+async function foundPhotos(openai: OpenAI, searchId: string) {
+  const search = await openai.responses.retrieve(searchId)
   const found = foundSchema.parse(JSON.parse(search.output_text)).candidates
-  const unique = [...new Map(found.map((c) => [c.imageUrl, c])).values()]
+  return [...new Map(found.map((c) => [c.imageUrl, c])).values()].slice(
+    0,
+    MAX_FOUND,
+  )
+}
+
+/**
+ * Downloads the photos the search found and starts ChatGPT looking at each
+ * beside the cover, to keep only those that really show the spine.
+ */
+async function startVetting(
+  openai: OpenAI,
+  bookId: string,
+  searchId: string,
+  book: SpineBook,
+  cover: Buffer | null,
+): Promise<SpineJob> {
+  const photos = await foundPhotos(openai, searchId)
   const downloaded = (
     await Promise.all(
-      unique.slice(0, MAX_FOUND).map(async (candidate) => {
-        const image = await fetchImage(candidate.imageUrl)
+      photos.map(async (photo, index) => {
+        const image = await fetchImage(photo.imageUrl)
         if (!image) return null
         try {
-          return { ...candidate, jpeg: await shrink(image, LOOK_SIDE) }
+          return { index, jpeg: await shrink(image, LOOK_SIDE) }
         } catch {
           return null
         }
       }),
     )
-  ).filter(<T>(candidate: T | null): candidate is T => candidate !== null)
-  if (downloaded.length === 0) return []
+  ).filter(<T>(photo: T | null): photo is T => photo !== null)
+  if (downloaded.length === 0) return { status: 'done', candidates: [] }
 
+  const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
   const vetting = await openai.responses.create({
     model: OPENAI_TEXT_MODEL,
+    background: true,
+    metadata: {
+      step: 'vetting' satisfies Step,
+      book: bookId,
+      search: searchId,
+      // which of the search's photos were looked at, in the order shown
+      photos: downloaded.map(({ index }) => index).join(','),
+    },
     input: [
       {
         role: 'user',
@@ -355,15 +406,7 @@ export async function findSpines(
               'For each photo, say whether the book’s spine is visible clearly enough to read its lettering (showsSpine), whether it is the same edition as the cover, matching its design (sameEdition), and in a few words what the photo shows (note).',
             ].join('\n'),
           },
-          ...(coverJpeg
-            ? [
-                {
-                  type: 'input_image' as const,
-                  image_url: dataUrl(coverJpeg),
-                  detail: 'low' as const,
-                },
-              ]
-            : []),
+          ...coverImage(coverJpeg),
           ...downloaded.flatMap(({ jpeg }, index) => [
             { type: 'input_text' as const, text: `Photo ${index}:` },
             {
@@ -405,74 +448,121 @@ export async function findSpines(
     },
   })
 
+  return working(vetting.id)
+}
+
+/** The photos ChatGPT kept, the cover's own edition first, each with a small preview. */
+async function vettedPhotos(
+  openai: OpenAI,
+  vetting: OpenAI.Responses.Response,
+  metadata: Record<string, string>,
+): Promise<SpineCandidate[]> {
+  const photos = await foundPhotos(openai, metadata['search'] ?? '')
+  const shown = (metadata['photos'] ?? '').split(',').map(Number)
   const { verdicts } = verdictSchema.parse(JSON.parse(vetting.output_text))
+
   const kept = verdicts
     .filter((verdict) => verdict.showsSpine)
     .sort((a, b) => Number(b.sameEdition) - Number(a.sameEdition))
     .flatMap(({ index, note }) => {
-      const photo = downloaded[index]
+      const photo = photos[shown[index] ?? -1]
       return photo ? [{ ...photo, note }] : []
     })
 
-  return Promise.all(
-    kept.map(async ({ imageUrl, pageUrl, jpeg, note }) => {
-      const preview = await sharp(jpeg)
-        .resize({ height: PREVIEW_HEIGHT, withoutEnlargement: true })
-        .jpeg({ quality: 75 })
-        .toBuffer()
-      return { imageUrl, pageUrl, preview: dataUrl(preview), note }
+  // fetched again for the previews, as nothing was kept between the steps
+  const candidates = await Promise.all(
+    kept.map(async ({ imageUrl, pageUrl, note }) => {
+      const image = await fetchImage(imageUrl)
+      if (!image) return null
+      try {
+        const preview = await sharp(image)
+          .rotate()
+          .resize({ height: PREVIEW_HEIGHT, withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality: 75 })
+          .toBuffer()
+        return { imageUrl, pageUrl, preview: dataUrl(preview), note }
+      } catch {
+        return null
+      }
     }),
+  )
+  return candidates.filter(
+    (candidate): candidate is SpineCandidate => candidate !== null,
   )
 }
 
 /**
- * Has ChatGPT paint the book's spine straight on and sharp, after a photo that
- * shows it (`reference`) and the cover it has to join, then cuts it out of the
- * white it stands on. Returns a PNG standing upright.
+ * Starts ChatGPT painting the book's spine straight on and sharp, after a photo
+ * that shows it (`reference`) and the cover it has to join.
  */
-export async function drawSpine(
+export async function startSpineDrawing(
   openai: OpenAI,
+  bookId: string,
   book: SpineBook,
   reference: Buffer,
   cover: Buffer | null,
-): Promise<Buffer> {
-  const images = [
-    await toFile(await shrink(reference, 1536), 'reference.jpg', {
-      type: 'image/jpeg',
-    }),
-    ...(cover
-      ? [
-          await toFile(await shrink(cover, 1536), 'cover.jpg', {
-            type: 'image/jpeg',
-          }),
-        ]
-      : []),
-  ]
+): Promise<SpineJob> {
+  const images = [reference, ...(cover ? [cover] : [])]
+  const jpegs = await Promise.all(images.map((image) => shrink(image, 1536)))
 
-  const result = await openai.images.edit({
-    model: OPENAI_IMAGE_MODEL,
-    image: images,
-    size: '1024x1536',
-    quality: 'high',
-    output_format: 'png',
-    background: 'opaque',
-    prompt: [
-      `The spine of the book ${describe(book)}, as a flat, straight-on scan.`,
-      'The first image is a photo that shows this spine, maybe at an angle or blurred.',
-      cover &&
-        'The second image is its front cover; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
-      'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
-      'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
-    ]
-      .filter(Boolean)
-      .join('\n'),
+  const drawing = await openai.responses.create({
+    model: OPENAI_TEXT_MODEL,
+    background: true,
+    metadata: { step: 'drawing' satisfies Step, book: bookId },
+    tools: [
+      {
+        type: 'image_generation',
+        model: OPENAI_IMAGE_MODEL,
+        action: 'edit',
+        size: '1024x1536',
+        quality: 'high',
+        output_format: 'png',
+        background: 'opaque',
+      },
+    ],
+    tool_choice: { type: 'image_generation' },
+    input: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `Draw the spine of the book ${describe(book)}, as a flat, straight-on scan.`,
+              'The first image is a photo that shows this spine, maybe at an angle or blurred.',
+              cover &&
+                'The second image is its front cover; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
+              'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
+              'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          },
+          ...jpegs.map((jpeg) => ({
+            type: 'input_image' as const,
+            image_url: dataUrl(jpeg),
+            detail: 'high' as const,
+          })),
+        ],
+      },
+    ],
   })
 
-  const painted = result.data?.[0]?.b64_json
-  if (!painted) throw new Error('No spine came back')
+  return working(drawing.id)
+}
+
+/** The painted spine cut out of the white it stands on, upright, as a PNG. */
+async function drawnSpine(drawing: OpenAI.Responses.Response): Promise<Buffer> {
+  const painted = drawing.output.find(
+    (item) => item.type === 'image_generation_call' && item.result,
+  )
+  if (painted?.type !== 'image_generation_call' || !painted.result) {
+    throw new SpineJobError('ChatGPT didn’t draw a spine, try again')
+  }
 
   // the white around the spine goes, and a sideways one is stood up
-  const trimmed = await sharp(Buffer.from(painted, 'base64'))
+  const trimmed = await sharp(Buffer.from(painted.result, 'base64'))
     .trim({ background: '#ffffff', threshold: 24 })
     .toBuffer({ resolveWithObject: true })
   const sideways = trimmed.info.width > trimmed.info.height
@@ -482,4 +572,50 @@ export async function drawSpine(
     .resize({ height: DRAWN_HEIGHT, withoutEnlargement: true })
     .png()
     .toBuffer()
+}
+
+/**
+ * Looks in on a step for the book: still working, the next step started, or
+ * what it came to. `spineBook` loads the book and its cover when a step needs
+ * them again.
+ */
+export async function followSpineJob(
+  openai: OpenAI,
+  bookId: string,
+  jobId: string,
+  spineBook: () => Promise<{ book: SpineBook; cover: Buffer | null }>,
+): Promise<SpineJob> {
+  const response = await openai.responses.retrieve(jobId)
+  const metadata = (response.metadata ?? {}) as Record<string, string>
+  if (metadata['book'] !== bookId) {
+    throw new SpineJobError('That search isn’t for this book')
+  }
+
+  if (response.status === 'queued' || response.status === 'in_progress') {
+    return working(jobId)
+  }
+  if (response.status !== 'completed') {
+    throw new SpineJobError(
+      response.error?.message ?? 'ChatGPT couldn’t finish, try again',
+    )
+  }
+
+  switch (metadata['step'] as Step) {
+    case 'search': {
+      const { book, cover } = await spineBook()
+      return startVetting(openai, bookId, jobId, book, cover)
+    }
+    case 'vetting':
+      return {
+        status: 'done',
+        candidates: await vettedPhotos(openai, response, metadata),
+      }
+    case 'drawing':
+      return {
+        status: 'done',
+        image: (await drawnSpine(response)).toString('base64'),
+      }
+    default:
+      throw new SpineJobError('That isn’t a spine search or drawing')
+  }
 }

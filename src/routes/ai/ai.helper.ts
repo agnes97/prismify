@@ -110,10 +110,11 @@ export async function openaiFor(
   ).get(AiProvider.OPENAI)
   if (!key) return null
 
-  // the long calls are given the time the Vercel function has
+  // the long work runs in the background at OpenAI, so each call is quick and
+  // has to end well inside the minute a Vercel function may run
   return new OpenAI({
     apiKey: key.apiKey,
-    timeout: 240_000,
+    timeout: 20_000,
     maxRetries: 1,
   })
 }

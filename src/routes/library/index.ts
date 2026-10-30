@@ -29,13 +29,14 @@ import {
 } from './library.cover.js'
 import {
   fetchImage,
+  findSpinePhotos,
   followSpineJob,
   type SeriesSpine,
   type SpineBook,
   type SpineJob,
   SpineJobError,
   startSpineDrawing,
-  startSpineSearch,
+  webPhoto,
 } from './library.spine.js'
 import {
   bookEditSchema,
@@ -43,7 +44,6 @@ import {
   readingSchema,
   spineDrawSchema,
   spineJobSchema,
-  spineSearchSchema,
 } from './library.validation.js'
 
 /** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
@@ -471,20 +471,20 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
   )
 
-  fastify.withTypeProvider<ZodTypeProvider>().post(
+  fastify.withTypeProvider<ZodTypeProvider>().get(
     '/books/:id/spine/candidates',
     {
       schema: {
         params: z.object({ id: z.string() }),
-        body: spineSearchSchema,
       },
     },
     async function (request, reply) {
-      // searched on the reader's own OpenAI key in the background; the
-      // library follows it at /books/:id/spine/jobs/:job and nothing is stored
-      const openai = await readersOpenai(request, true)
-      if (!('responses' in openai)) {
-        return reply.status(openai.status).send({ message: openai.message })
+      // found with the library's own image search key, so no AI key is needed
+      // to look; nothing is stored
+      if (!imageSearchKey) {
+        return reply
+          .status(503)
+          .send({ message: 'Searching for spines isn’t available right now' })
       }
 
       const found = await spineBook(request.params.id)
@@ -493,19 +493,34 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       try {
-        return await startSpineSearch(
-          openai,
-          request.params.id,
-          found.book,
-          found.cover,
-          request.body?.seen,
-          imageSearchKey,
-        )
+        return {
+          candidates: await findSpinePhotos(imageSearchKey, found.book),
+        }
       } catch (error) {
         request.log.warn(error, 'spine search failed')
         const problem = spineProblem(error)
         return reply.status(problem.status).send({ message: problem.message })
       }
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().get(
+    '/spine-photo',
+    {
+      schema: {
+        querystring: z.object({ url: z.string().url() }),
+      },
+    },
+    async function (request, reply) {
+      // a found photo, fetched here as most sites won't let the library read
+      // theirs, for the reader to crop the spine out of
+      const photo = await webPhoto(request.query.url)
+      if (!photo) {
+        return reply
+          .status(400)
+          .send({ message: 'That photo can’t be fetched any more' })
+      }
+      return reply.type('image/jpeg').send(photo)
     },
   )
 
@@ -582,17 +597,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
 
       const { id, job } = request.params
       try {
-        return await followSpineJob(
-          openai,
-          id,
-          job,
-          async () => {
-            const found = await spineBook(id)
-            if (!found) throw new SpineJobError('Book not found')
-            return found
-          },
-          request.log,
-        )
+        return await followSpineJob(openai, id, job, request.log)
       } catch (error) {
         request.log.warn(error, 'spine job failed')
         const problem = spineProblem(error)

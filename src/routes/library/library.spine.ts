@@ -7,11 +7,7 @@ import type OpenAI from 'openai'
 import sharp from 'sharp'
 import { z } from 'zod'
 
-import {
-  OPENAI_IMAGE_MODEL,
-  OPENAI_LOOK_MODEL,
-  OPENAI_TEXT_MODEL,
-} from '../ai/ai.helper.js'
+import { OPENAI_IMAGE_MODEL, OPENAI_TEXT_MODEL } from '../ai/ai.helper.js'
 
 /** the book as the spine is looked for and drawn after */
 export type SpineBook = {
@@ -30,38 +26,24 @@ export type SeriesSpine = {
   spine: Buffer
 }
 
+/** a photo image search found of the book, for the reader to crop its spine out of */
 export type SpineCandidate = {
-  /** the photo on the web, sent back to draw the spine after */
+  /** the photo on the web */
   imageUrl: string
   /** the page it was found on */
   pageUrl: string
-  /** a small JPEG of it as a data URL, as many sites won't show their photos elsewhere */
+  /** the image search's own small copy, which shows where the photo's site won't */
   preview: string
-  /** what the photo shows, in a few words */
-  note: string
-  /** whether ChatGPT thinks it shows the spine well enough to draw it after */
-  showsSpine: boolean
+  /** the title of the page it was found on */
+  title: string
 }
 
-/** how many photos the search may suggest, and how many are looked at */
-const MAX_FOUND = 10
-/**
- * how many searches and page visits the search may make; left to itself it
- * makes some twenty and takes minutes, for photos the first few turn up, and
- * every page it reads is paid for again on each later call
- */
-const MAX_SEARCH_CALLS = 4
-/**
- * how many photos each image search brings back, far more than are looked at,
- * so searching again past those turned down still finds new ones
- */
+/** how many photos each image search brings back, the most of them it ranks well */
 const IMAGE_SEARCH_COUNT = 50
 /** a found photo bigger than this isn't a photo of a book */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
-/** photos are shrunk to this before the models see them, which is plenty to read a spine */
-const LOOK_SIDE = 1024
-/** the found photos are shown one at a time, big enough to read the spine on */
-const PREVIEW_HEIGHT = 480
+/** a found photo is shrunk to this to crop the spine out of, which is plenty to read it */
+const PHOTO_SIDE = 2048
 /** the drawn spine is kept this tall; the shelf stores it at half */
 const DRAWN_HEIGHT = 1280
 
@@ -327,21 +309,21 @@ export async function fetchImage(url: string): Promise<Buffer | null> {
   return null
 }
 
-/** a photo the search found, before it is looked at */
-type Found = {
-  imageUrl: string
-  pageUrl: string
-  /** the image search's own copy, for when the photo's site turns the server away */
-  copyUrl?: string
+/** Shrinks a photo from the web to crop the spine out of, or null when it can't be fetched. */
+export async function webPhoto(url: string): Promise<Buffer | null> {
+  const image = await fetchImage(url)
+  if (!image) return null
+  try {
+    return await shrink(image, PHOTO_SIDE)
+  } catch {
+    return null
+  }
 }
-
-const foundSchema = z.object({
-  candidates: z.array(z.object({ imageUrl: z.string(), pageUrl: z.string() })),
-})
 
 const imageSearchSchema = z.object({
   results: z.array(
     z.object({
+      title: z.string().optional(),
       // the page the photo is on
       url: z.string(),
       thumbnail: z.object({ src: z.string() }).optional(),
@@ -350,30 +332,11 @@ const imageSearchSchema = z.object({
   ),
 })
 
-/** the photos looked at and every one tried, kept in the vetting's instructions for the step after */
-const sourcesSchema = z.object({
-  photos: z.array(z.object({ imageUrl: z.string(), pageUrl: z.string() })),
-  tried: z.array(z.string()),
-})
-
-const SOURCES = 'For reference, where each photo was found: '
-
-const verdictSchema = z.object({
-  verdicts: z.array(
-    z.object({
-      index: z.number().int(),
-      showsSpine: z.boolean(),
-      sameEdition: z.boolean(),
-      note: z.string(),
-    }),
-  ),
-})
-
 /**
  * Finding and drawing a spine take longer than a Vercel function may run, so
  * each runs at OpenAI in the background as a response the library polls for,
  * by its id. Only the reader's own key can read it. Its metadata says which
- * step it is and carries what the next step needs.
+ * step it is.
  */
 export type SpineJob =
   | {
@@ -383,45 +346,20 @@ export type SpineJob =
       step: Step
       /** still waiting its turn at OpenAI */
       queued: boolean
-      /** how many found photos are being looked at, while vetting */
-      photos?: number
-    }
-  | {
-      status: 'done'
-      candidates: SpineCandidate[]
-      /** every photo URL the search tried, shown or not, for searching again to skip */
-      tried: string[]
     }
   | { status: 'done'; image: string }
 
-type Step = 'search' | 'vetting' | 'drawing'
+type Step = 'drawing'
 
 /** A step that ran but came to nothing, with what to tell the reader. */
 export class SpineJobError extends Error {}
 
-const working = (
-  job: string,
-  step: Step,
-  queued = true,
-  photos?: number,
-): SpineJob => ({
+const working = (job: string, step: Step, queued = true): SpineJob => ({
   status: 'working',
   job,
   step,
   queued,
-  ...(photos !== undefined && { photos }),
 })
-
-const coverImage = (coverJpeg: Buffer | null) =>
-  coverJpeg
-    ? [
-        {
-          type: 'input_image' as const,
-          image_url: dataUrl(coverJpeg),
-          detail: 'low' as const,
-        },
-      ]
-    : []
 
 /**
  * What a book is looked up by in image search: the book itself, as shops show
@@ -439,7 +377,10 @@ function imageQueries({ title, authors, series }: SpineBook): string[] {
 }
 
 /** The photos Brave's image search finds for one query, as it ranks them. */
-async function searchImages(key: string, query: string): Promise<Found[]> {
+async function searchImages(
+  key: string,
+  query: string,
+): Promise<SpineCandidate[]> {
   const url = new URL('https://api.search.brave.com/res/v1/images/search')
   url.search = new URLSearchParams({
     q: query,
@@ -455,131 +396,19 @@ async function searchImages(key: string, query: string): Promise<Found[]> {
   }
 
   const { results } = imageSearchSchema.parse(await response.json())
-  return results.flatMap(({ url: pageUrl, properties, thumbnail }) => {
+  return results.flatMap(({ title, url: pageUrl, properties, thumbnail }) => {
     const imageUrl = properties?.url ?? thumbnail?.src
     return imageUrl
-      ? [{ imageUrl, pageUrl, ...(thumbnail && { copyUrl: thumbnail.src }) }]
+      ? [
+          {
+            imageUrl,
+            pageUrl,
+            preview: thumbnail?.src ?? imageUrl,
+            title: title ?? '',
+          },
+        ]
       : []
   })
-}
-
-/**
- * Photos of the book from image search, the queries' best taken in turn, other
- * than those the reader has already been shown or the search already tried.
- */
-async function imageSearch(
-  key: string,
-  book: SpineBook,
-  seen: string[],
-): Promise<Found[]> {
-  const searched = await Promise.allSettled(
-    imageQueries(book).map((query) => searchImages(key, query)),
-  )
-  const lists = searched.flatMap((result) =>
-    result.status === 'fulfilled' ? [result.value] : [],
-  )
-  if (lists.length === 0) {
-    throw new SpineJobError('The image search failed, try again')
-  }
-
-  const skip = new Set(seen)
-  const found = new Map<string, Found>()
-  const longest = Math.max(...lists.map((list) => list.length))
-  for (let rank = 0; rank < longest && found.size < MAX_FOUND; rank++) {
-    for (const photo of lists.flatMap((list) => list[rank] ?? [])) {
-      const imageUrl = largest(photo.imageUrl)
-      if (skip.has(imageUrl) || (photo.copyUrl && skip.has(photo.copyUrl))) {
-        continue
-      }
-      if (found.size < MAX_FOUND && !found.has(imageUrl)) {
-        found.set(imageUrl, { ...photo, imageUrl })
-      }
-    }
-  }
-  return [...found.values()]
-}
-
-/**
- * Starts looking for photos that show the book's spine, other than those the
- * reader has already turned down or a search tried (`seen`): with Brave's image
- * search when there is a key for it, which is quick and goes straight on to
- * ChatGPT looking at them, otherwise with ChatGPT searching the web.
- */
-export async function startSpineSearch(
-  openai: OpenAI,
-  bookId: string,
-  book: SpineBook,
-  cover: Buffer | null,
-  seen: string[] = [],
-  imageSearchKey?: string,
-): Promise<SpineJob> {
-  if (imageSearchKey) {
-    const photos = await imageSearch(imageSearchKey, book, seen)
-    return startVetting(openai, bookId, photos, book, cover)
-  }
-
-  const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
-
-  const search = await openai.responses.create({
-    model: OPENAI_TEXT_MODEL,
-    background: true,
-    metadata: { step: 'search' satisfies Step, book: bookId },
-    reasoning: { effort: 'low' },
-    tools: [{ type: 'web_search', search_context_size: 'low' }],
-    max_tool_calls: MAX_SEARCH_CALLS,
-    input: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: [
-              `Find photos on the web that show the spine of the book ${describe(book)}.`,
-              coverJpeg &&
-                'The attached image is its cover: prefer this same edition.',
-              'Good sources: bookshop and publisher listings with angled or 3D product shots, back-and-spine images, photos of the book on a shelf, second-hand listings with several photos.',
-              'Few photos are labelled as spines, so don’t only search for the word spine: search for the book itself, its 3D cover or product shots and its listings, and keep photos where the spine shows tilted, at an angle or in perspective beside the cover. Those are as good as a straight one, as it gets straightened afterwards.',
-              seen.length > 0 &&
-                `These photos were already tried or shown to the reader and none was right; find different ones, from other sites or with other searches, never these:\n${seen.join('\n')}`,
-              'Be quick: a few searches are enough, stop once you have some good photos.',
-              `Give up to ${MAX_FOUND} direct image URLs (the image file itself, e.g. ending in .jpg or served by an image CDN, not the page), each with the page it is on. Only include URLs you actually saw in search results or pages; never guess one.`,
-            ]
-              .filter(Boolean)
-              .join('\n'),
-          },
-          ...coverImage(coverJpeg),
-        ],
-      },
-    ],
-    text: {
-      format: {
-        type: 'json_schema',
-        name: 'spine_photos',
-        strict: true,
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['candidates'],
-          properties: {
-            candidates: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['imageUrl', 'pageUrl'],
-                properties: {
-                  imageUrl: { type: 'string' },
-                  pageUrl: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  })
-
-  return working(search.id, 'search')
 }
 
 /**
@@ -591,193 +420,33 @@ const largest = (imageUrl: string) =>
     ? imageUrl.replace(/\/s-l\d+\./, '/s-l1600.')
     : imageUrl
 
-/** The photos a finished ChatGPT search found, each once and at their largest, as many as are looked at. */
-function foundPhotos(search: OpenAI.Responses.Response): Found[] {
-  const found = foundSchema
-    .parse(JSON.parse(search.output_text))
-    .candidates.map((c) => ({ ...c, imageUrl: largest(c.imageUrl) }))
-  return [...new Map(found.map((c) => [c.imageUrl, c])).values()].slice(
-    0,
-    MAX_FOUND,
-  )
-}
-
 /**
- * A found photo shrunk for looking at, or the image search's own copy of it
- * when its site turns the server away, then found at the copy's URL.
+ * Every photo image search finds of the book, for the reader to pick the one
+ * that shows its spine: the queries' best taken in turn, each once.
  */
-async function download(
-  photo: Found,
-): Promise<{ photo: Found; jpeg: Buffer } | null> {
-  for (const imageUrl of [photo.imageUrl, photo.copyUrl]) {
-    const image = imageUrl && (await fetchImage(imageUrl))
-    if (!image) continue
-    try {
-      return {
-        photo: { ...photo, imageUrl },
-        jpeg: await shrink(image, LOOK_SIDE),
-      }
-    } catch {
-      continue
+export async function findSpinePhotos(
+  key: string,
+  book: SpineBook,
+): Promise<SpineCandidate[]> {
+  const searched = await Promise.allSettled(
+    imageQueries(book).map((query) => searchImages(key, query)),
+  )
+  const lists = searched.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value] : [],
+  )
+  if (lists.length === 0) {
+    throw new SpineJobError('The image search failed, try again')
+  }
+
+  const found = new Map<string, SpineCandidate>()
+  const longest = Math.max(...lists.map((list) => list.length))
+  for (let rank = 0; rank < longest; rank++) {
+    for (const photo of lists.flatMap((list) => list[rank] ?? [])) {
+      const imageUrl = largest(photo.imageUrl)
+      if (!found.has(imageUrl)) found.set(imageUrl, { ...photo, imageUrl })
     }
   }
-  return null
-}
-
-/**
- * Downloads the photos the search found and starts ChatGPT looking at each
- * beside the cover, to keep only those that really show the spine.
- */
-async function startVetting(
-  openai: OpenAI,
-  bookId: string,
-  photos: Found[],
-  book: SpineBook,
-  cover: Buffer | null,
-): Promise<SpineJob> {
-  // every photo is skipped when searching again, even one that never came
-  const tried = photos.map(({ imageUrl }) => imageUrl)
-  const downloaded = (await Promise.all(photos.map(download))).filter(
-    <T>(photo: T | null): photo is T => photo !== null,
-  )
-  if (downloaded.length === 0) {
-    return { status: 'done', candidates: [], tried }
-  }
-
-  const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
-  const sources: z.infer<typeof sourcesSchema> = {
-    photos: downloaded.map(({ photo: { imageUrl, pageUrl } }) => ({
-      imageUrl,
-      pageUrl,
-    })),
-    tried,
-  }
-  const vetting = await openai.responses.create({
-    model: OPENAI_LOOK_MODEL,
-    background: true,
-    reasoning: { effort: 'low' },
-    metadata: {
-      step: 'vetting' satisfies Step,
-      book: bookId,
-      photos: String(downloaded.length),
-    },
-    // nothing is kept between the steps, so the photos' URLs travel here, in
-    // the order they are numbered, where the model may glean the shop as well
-    instructions: SOURCES + JSON.stringify(sources),
-    input: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: [
-              `These are photos found for the book ${describe(book)}.`,
-              coverJpeg
-                ? 'The first image is its cover; the photos follow, numbered from 0.'
-                : 'The photos are numbered from 0.',
-              'For each photo, say whether the book’s spine is visible well enough to redraw it (showsSpine), whether it is the same edition as the cover, matching its design (sameEdition), and in a few words what the photo shows (note).',
-              'A spine that is tilted, seen at an angle or in perspective, narrow beside the cover in a 3D shot, or on a shelf among other books still shows the spine, as it gets straightened afterwards; count it when its colours and design can be made out and most of its lettering read. Only a spine that is hidden, cut off, or too small or blurred to tell its design does not.',
-            ].join('\n'),
-          },
-          ...coverImage(coverJpeg),
-          ...downloaded.flatMap(({ jpeg }, index) => [
-            { type: 'input_text' as const, text: `Photo ${index}:` },
-            {
-              type: 'input_image' as const,
-              image_url: dataUrl(jpeg),
-              detail: 'high' as const,
-            },
-          ]),
-        ],
-      },
-    ],
-    text: {
-      format: {
-        type: 'json_schema',
-        name: 'spine_verdicts',
-        strict: true,
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['verdicts'],
-          properties: {
-            verdicts: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['index', 'showsSpine', 'sameEdition', 'note'],
-                properties: {
-                  index: { type: 'integer' },
-                  showsSpine: { type: 'boolean' },
-                  sameEdition: { type: 'boolean' },
-                  note: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  })
-
-  return working(vetting.id, 'vetting', true, downloaded.length)
-}
-
-/**
- * Every photo ChatGPT looked at, each with a small preview, for the reader to
- * go through one by one: those showing the spine first, the cover's own
- * edition before others, and those it doubted last, as it may be wrong.
- */
-async function vettedPhotos(
-  vetting: OpenAI.Responses.Response,
-): Promise<{ candidates: SpineCandidate[]; tried: string[] }> {
-  const instructions =
-    typeof vetting.instructions === 'string' ? vetting.instructions : ''
-  const { photos, tried } = sourcesSchema.parse(
-    JSON.parse(instructions.slice(SOURCES.length)),
-  )
-  const { verdicts } = verdictSchema.parse(JSON.parse(vetting.output_text))
-
-  const rank = ({ showsSpine, sameEdition }: (typeof verdicts)[number]) =>
-    2 * Number(showsSpine) + Number(sameEdition)
-  const kept = verdicts
-    .sort((a, b) => rank(b) - rank(a))
-    .flatMap(({ index, note, showsSpine }) => {
-      const photo = photos[index]
-      return photo ? [{ ...photo, note, showsSpine }] : []
-    })
-
-  // fetched again for the previews, as nothing was kept between the steps
-  const candidates = await Promise.all(
-    kept.map(async ({ imageUrl, pageUrl, note, showsSpine }) => {
-      const image = await fetchImage(imageUrl)
-      if (!image) return null
-      try {
-        const preview = await sharp(image)
-          .rotate()
-          .resize({ height: PREVIEW_HEIGHT, withoutEnlargement: true })
-          .flatten({ background: '#ffffff' })
-          .jpeg({ quality: 75 })
-          .toBuffer()
-        return {
-          imageUrl,
-          pageUrl,
-          preview: dataUrl(preview),
-          note,
-          showsSpine,
-        }
-      } catch {
-        return null
-      }
-    }),
-  )
-  return {
-    candidates: candidates.filter(
-      (candidate): candidate is SpineCandidate => candidate !== null,
-    ),
-    tried,
-  }
+  return [...found.values()]
 }
 
 /**
@@ -882,34 +551,24 @@ async function drawnSpine(drawing: OpenAI.Responses.Response): Promise<Buffer> {
     .png()
     .toBuffer()
 }
-
-/**
- * Looks in on a step for the book: still working, the next step started, or
- * what it came to. `spineBook` loads the book and its cover when a step needs
- * them again.
- */
+/** Looks in on a drawing for the book: still working, or the spine it drew. */
 export async function followSpineJob(
   openai: OpenAI,
   bookId: string,
   jobId: string,
-  spineBook: () => Promise<{ book: SpineBook; cover: Buffer | null }>,
   log: FastifyBaseLogger,
 ): Promise<SpineJob> {
   const response = await openai.responses.retrieve(jobId)
   const metadata = (response.metadata ?? {}) as Record<string, string>
   if (metadata['book'] !== bookId) {
-    throw new SpineJobError('That search isn’t for this book')
+    throw new SpineJobError('That drawing isn’t for this book')
+  }
+  if (metadata['step'] !== ('drawing' satisfies Step)) {
+    throw new SpineJobError('That isn’t a spine drawing')
   }
 
-  const step = metadata['step'] as Step
   if (response.status === 'queued' || response.status === 'in_progress') {
-    const photos = metadata['photos'] && Number(metadata['photos'])
-    return working(
-      jobId,
-      step,
-      response.status === 'queued',
-      photos || undefined,
-    )
+    return working(jobId, 'drawing', response.status === 'queued')
   }
   if (response.status !== 'completed') {
     throw new SpineJobError(
@@ -917,25 +576,14 @@ export async function followSpineJob(
     )
   }
 
-  // what each step costs, to see where the reader's money goes
+  // what a drawing costs, to see where the reader's money goes
   log.info(
-    { step, book: bookId, model: response.model, usage: response.usage },
-    'spine step finished',
+    { book: bookId, model: response.model, usage: response.usage },
+    'spine drawing finished',
   )
 
-  switch (step) {
-    case 'search': {
-      const { book, cover } = await spineBook()
-      return startVetting(openai, bookId, foundPhotos(response), book, cover)
-    }
-    case 'vetting':
-      return { status: 'done', ...(await vettedPhotos(response)) }
-    case 'drawing':
-      return {
-        status: 'done',
-        image: (await drawnSpine(response)).toString('base64'),
-      }
-    default:
-      throw new SpineJobError('That isn’t a spine search or drawing')
+  return {
+    status: 'done',
+    image: (await drawnSpine(response)).toString('base64'),
   }
 }

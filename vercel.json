@@ -4,5 +4,10 @@
       "source": "/(.*)",
       "destination": "/api/serverless.ts"
     }
-  ]
+  ],
+  "functions": {
+    "api/serverless.ts": {
+      "maxDuration": 300
+    }
+  }
 }

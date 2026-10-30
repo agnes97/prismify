@@ -59,6 +59,36 @@ model User {
   createdAt    DateTime  @default(now())
   lastLoggedIn DateTime?
   profile      Profile?
+  AiKeys       AiKey[]
+  AiCalls      AiCall[]
+}
+
+// AI services a reader can connect with their own API key
+enum AiProvider {
+  OPENAI
+}
+
+// a reader's own API key for one provider, sealed with AI_KEYS_SECRET, e.g. for the library's AI-drawn spines
+model AiKey {
+  User      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  provider  AiProvider
+  cipher    String // iv.tag.sealed, each base64
+  hint      String // the key's last four characters, to tell which one is connected
+  createdAt DateTime   @default(now())
+
+  @@id([userId, provider])
+}
+
+// one call made on a reader's key, counted so a stolen login can't run up their bill
+model AiCall {
+  id        String     @id @default(uuid())
+  User      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  provider  AiProvider
+  createdAt DateTime   @default(now())
+
+  @@index([userId, provider, createdAt])
 }
 
 model Profile {

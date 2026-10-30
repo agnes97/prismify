@@ -46,3 +46,9 @@ export const bookEditSchema = z
 export const coverPickSchema = z
   .object({ coverUrl: openLibraryCover })
   .nullish()
+
+// A photo found on the web to draw the spine after; the reader's own photo
+// comes as multipart instead, which leaves the body null
+export const spineDrawSchema = z
+  .object({ imageUrl: z.string().url() })
+  .nullish()

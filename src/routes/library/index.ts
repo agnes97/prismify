@@ -1,7 +1,16 @@
 import multipart from '@fastify/multipart'
+import { AiProvider } from '@prisma/client'
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
+import type OpenAI from 'openai'
 import { z } from 'zod'
+
+import {
+  keysSecret,
+  openaiFor,
+  openaiProblem,
+  useAllowance,
+} from '../ai/ai.helper.js'
 
 import {
   bookSelect,
@@ -18,10 +27,12 @@ import {
   storeCover,
   storeSpine,
 } from './library.cover.js'
+import { drawSpine, fetchImage, findSpines } from './library.spine.js'
 import {
   bookEditSchema,
   coverPickSchema,
   readingSchema,
+  spineDrawSchema,
 } from './library.validation.js'
 
 /** under the 4.5 MB a Vercel function accepts; the library shrinks photos before sending */
@@ -35,6 +46,53 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   })
 
   const blobToken = fastify.config.BLOB_READ_WRITE_TOKEN || undefined
+  const aiSecret = keysSecret(fastify.config.AI_KEYS_SECRET)
+
+  /**
+   * An OpenAI client on the reader's own key, counted against their allowance,
+   * or the status and message to refuse with.
+   */
+  async function readersOpenai(
+    request: FastifyRequest,
+  ): Promise<OpenAI | { status: 409 | 429 | 503; message: string }> {
+    if (!aiSecret) {
+      return { status: 503, message: 'AI spines aren’t available right now' }
+    }
+    const openai = await openaiFor(fastify.prisma, aiSecret, request.user.id)
+    if (!openai) {
+      return {
+        status: 409,
+        message: 'Connect ChatGPT under AI Keys in the menu first',
+      }
+    }
+    const refusal = await useAllowance(
+      fastify.prisma,
+      request.user.id,
+      AiProvider.OPENAI,
+    )
+    return refusal ? { status: 429, message: refusal } : openai
+  }
+
+  /** The book as the spine is looked for and drawn after, with its cover, or null when there is no such book. */
+  async function spineBook(id: string) {
+    const book = await fastify.prisma.libraryBook.findUnique({
+      select: {
+        title: true,
+        authors: true,
+        year: true,
+        isbn: true,
+        coverUrl: true,
+      },
+      where: { id },
+    })
+    if (!book) return null
+
+    const { coverUrl, ...details } = book
+    return {
+      book: details,
+      cover: coverUrl ? await fetchImage(coverUrl) : null,
+    }
+  }
 
   /** The photo sent as multipart, or the status and message to refuse it with. */
   async function uploadedPhoto(
@@ -345,6 +403,88 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       return updated
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().post(
+    '/books/:id/spine/candidates',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // searched on the reader's own OpenAI key; nothing is stored
+      const openai = await readersOpenai(request)
+      if (!('responses' in openai)) {
+        return reply.status(openai.status).send({ message: openai.message })
+      }
+
+      const found = await spineBook(request.params.id)
+      if (!found) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      try {
+        return await findSpines(openai, found.book, found.cover)
+      } catch (error) {
+        request.log.warn(error, 'spine search failed')
+        return reply.status(502).send({ message: openaiProblem(error) })
+      }
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().post(
+    '/books/:id/spine/draw',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+        body: spineDrawSchema,
+      },
+    },
+    async function (request, reply) {
+      // drawn on the reader's own OpenAI key and only shown; the library saves
+      // it through PUT /books/:id/spine once the reader likes it
+      const openai = await readersOpenai(request)
+      if (!('responses' in openai)) {
+        return reply.status(openai.status).send({ message: openai.message })
+      }
+
+      const found = await spineBook(request.params.id)
+      if (!found) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      let reference: Buffer | null
+      if (request.isMultipart()) {
+        const image = await uploadedPhoto(request)
+        if (!Buffer.isBuffer(image)) {
+          return reply.status(image.status).send({ message: image.message })
+        }
+        reference = image
+      } else if (request.body) {
+        reference = await fetchImage(request.body.imageUrl)
+        if (!reference) {
+          return reply
+            .status(400)
+            .send({ message: 'That photo can’t be fetched any more' })
+        }
+      } else {
+        return reply.status(400).send({ message: 'No photo to draw it after' })
+      }
+
+      try {
+        const spine = await drawSpine(
+          openai,
+          found.book,
+          reference,
+          found.cover,
+        )
+        return { image: spine.toString('base64') }
+      } catch (error) {
+        request.log.warn(error, 'spine drawing failed')
+        return reply.status(502).send({ message: openaiProblem(error) })
+      }
     },
   )
 

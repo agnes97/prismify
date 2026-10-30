@@ -102,4 +102,6 @@ When an endpoint needs new tables or columns (as in the CV, access log and ratin
 One gitmoji-prefixed commit per endpoint/feature, imperative and short:
 `✨ Add endpoint to …` (feature), `🐛 Fix …`, `🗃️ …` (schema/migrations only), `🔧 …` (config), `🦺 …` (validation), `🧐 …` (db queries).
 
+Keep `master` a straight line, with no merge commits: rebase a feature branch onto `master` (`git rebase master`) and then fast-forward it in (`git merge --ff-only <branch>`); never `git merge --no-ff` or a merge commit from a pull. The repo is set to `merge.ff only` and `pull.rebase true` locally, so a merge that can't fast-forward fails instead of creating one.
+
 After changing an endpoint's request or response shape, update the clients that use it (e.g. `../library/src/lib/auth.svelte.ts`, `../agnes97-portfolio`).

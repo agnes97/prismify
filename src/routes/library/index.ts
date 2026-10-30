@@ -626,6 +626,34 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
   )
 
+  fastify.withTypeProvider<ZodTypeProvider>().delete(
+    '/books/:id/cover',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // plain cloth with the title on, still dyed after the cover it had
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: { id: true, coverUrl: true },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      const updated = await fastify.prisma.libraryBook.update({
+        select: bookSelect,
+        where: { id: book.id },
+        data: { coverUrl: null },
+      })
+      await deleteImage(blobToken, book.coverUrl)
+
+      return updated
+    },
+  )
+
   fastify.get('/readers', async function (_request, _reply) {
     return fastify.prisma.profile.findMany({
       select: { id: true, name: true, avatar: true },

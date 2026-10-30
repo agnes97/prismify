@@ -16,6 +16,8 @@ export const PROVIDER_NAMES = Object.keys(PROVIDERS) as [
 
 /** reads book pages, searches the web and looks at photos */
 export const OPENAI_TEXT_MODEL = 'gpt-5.5'
+/** tells which found photos show the spine, a plain look that needs no big model */
+export const OPENAI_LOOK_MODEL = 'gpt-5.4-mini'
 /** paints the spines */
 export const OPENAI_IMAGE_MODEL = 'gpt-image-2'
 

@@ -2,11 +2,16 @@ import { lookup } from 'node:dns'
 import type { IncomingMessage } from 'node:http'
 import { request } from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
+import type { FastifyBaseLogger } from 'fastify'
 import type OpenAI from 'openai'
 import sharp from 'sharp'
 import { z } from 'zod'
 
-import { OPENAI_IMAGE_MODEL, OPENAI_TEXT_MODEL } from '../ai/ai.helper.js'
+import {
+  OPENAI_IMAGE_MODEL,
+  OPENAI_LOOK_MODEL,
+  OPENAI_TEXT_MODEL,
+} from '../ai/ai.helper.js'
 
 /** the book as the spine is looked for and drawn after */
 export type SpineBook = {
@@ -41,9 +46,10 @@ export type SpineCandidate = {
 const MAX_FOUND = 10
 /**
  * how many searches and page visits the search may make; left to itself it
- * makes some twenty and takes minutes, for photos the first few turn up
+ * makes some twenty and takes minutes, for photos the first few turn up, and
+ * every page it reads is paid for again on each later call
  */
-const MAX_SEARCH_CALLS = 6
+const MAX_SEARCH_CALLS = 4
 /** a found photo bigger than this isn't a photo of a book */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 /** photos are shrunk to this before the models see them, which is plenty to read a spine */
@@ -387,7 +393,7 @@ export async function startSpineSearch(
     background: true,
     metadata: { step: 'search' satisfies Step, book: bookId },
     reasoning: { effort: 'low' },
-    tools: [{ type: 'web_search' }],
+    tools: [{ type: 'web_search', search_context_size: 'low' }],
     max_tool_calls: MAX_SEARCH_CALLS,
     input: [
       {
@@ -494,8 +500,9 @@ async function startVetting(
 
   const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
   const vetting = await openai.responses.create({
-    model: OPENAI_TEXT_MODEL,
+    model: OPENAI_LOOK_MODEL,
     background: true,
+    reasoning: { effort: 'low' },
     metadata: {
       step: 'vetting' satisfies Step,
       book: bookId,
@@ -727,6 +734,7 @@ export async function followSpineJob(
   bookId: string,
   jobId: string,
   spineBook: () => Promise<{ book: SpineBook; cover: Buffer | null }>,
+  log: FastifyBaseLogger,
 ): Promise<SpineJob> {
   const response = await openai.responses.retrieve(jobId)
   const metadata = (response.metadata ?? {}) as Record<string, string>
@@ -744,6 +752,12 @@ export async function followSpineJob(
       response.error?.message ?? 'ChatGPT couldn’t finish, try again',
     )
   }
+
+  // what each step costs, to see where the reader's money goes
+  log.info(
+    { step, book: bookId, model: response.model, usage: response.usage },
+    'spine step finished',
+  )
 
   switch (step) {
     case 'search': {

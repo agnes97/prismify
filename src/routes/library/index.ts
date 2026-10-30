@@ -579,11 +579,17 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
 
       const { id, job } = request.params
       try {
-        return await followSpineJob(openai, id, job, async () => {
-          const found = await spineBook(id)
-          if (!found) throw new SpineJobError('Book not found')
-          return found
-        })
+        return await followSpineJob(
+          openai,
+          id,
+          job,
+          async () => {
+            const found = await spineBook(id)
+            if (!found) throw new SpineJobError('Book not found')
+            return found
+          },
+          request.log,
+        )
       } catch (error) {
         request.log.warn(error, 'spine job failed')
         const problem = spineProblem(error)

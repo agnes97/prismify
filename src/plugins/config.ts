@@ -7,6 +7,8 @@ const configSchema = z.object({
   BLOB_READ_WRITE_TOKEN: z.string().optional(),
   // 32 random bytes in base64 that seal the readers' OpenAI keys; AI is off without it
   AI_KEYS_SECRET: z.string().optional(),
+  // Brave Search API key the library finds photos of spines with; ChatGPT searches the web without it
+  BRAVE_SEARCH_API_KEY: z.string().optional(),
 })
 
 declare module 'fastify' {

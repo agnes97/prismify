@@ -2,8 +2,8 @@ import { z } from 'zod'
 
 import { isOpenLibraryCover } from './library.cover.js'
 
-// how many turned-down photos a spine search is told to skip, a few searches' worth
-const MAX_SEEN = 40
+// how many photos tried or turned down a spine search is told to skip, a few searches' worth
+const MAX_SEEN = 80
 
 // only Open Library's covers are fetched and mirrored
 const openLibraryCover = z

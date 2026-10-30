@@ -21,6 +21,7 @@ export type SpineBook = {
   isbn: string | null
   series: string | null
   seriesNumber: number | null
+  pages: number | null
 }
 
 /** another volume of the book's series, whose spine the drawing follows */
@@ -50,6 +51,11 @@ const MAX_FOUND = 10
  * every page it reads is paid for again on each later call
  */
 const MAX_SEARCH_CALLS = 4
+/**
+ * how many photos each image search brings back, far more than are looked at,
+ * so searching again past those turned down still finds new ones
+ */
+const IMAGE_SEARCH_COUNT = 50
 /** a found photo bigger than this isn't a photo of a book */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 /** photos are shrunk to this before the models see them, which is plenty to read a spine */
@@ -77,6 +83,16 @@ const describe = ({
   ]
     .filter(Boolean)
     .join(' ')
+
+/**
+ * How the spine of a book this long measures, width to height: 0.07 mm a page
+ * and 2 mm of boards, on a book 20 cm tall, no thicker past 1000 pages, as the
+ * library's shelves measure it.
+ */
+const spineShape = (pages: number) => {
+  const width = Math.min(pages, 1000) * 0.07 + 2
+  return `It has ${pages} pages, so its spine is about ${Math.round(width)} mm wide and 200 mm tall, 1 : ${Math.round((200 / width) * 10) / 10} (width : height); draw it in that proportion.`
+}
 
 const dataUrl = (jpeg: Buffer) =>
   `data:image/jpeg;base64,${jpeg.toString('base64')}`
@@ -311,9 +327,36 @@ export async function fetchImage(url: string): Promise<Buffer | null> {
   return null
 }
 
+/** a photo the search found, before it is looked at */
+type Found = {
+  imageUrl: string
+  pageUrl: string
+  /** the image search's own copy, for when the photo's site turns the server away */
+  copyUrl?: string
+}
+
 const foundSchema = z.object({
   candidates: z.array(z.object({ imageUrl: z.string(), pageUrl: z.string() })),
 })
+
+const imageSearchSchema = z.object({
+  results: z.array(
+    z.object({
+      // the page the photo is on
+      url: z.string(),
+      thumbnail: z.object({ src: z.string() }).optional(),
+      properties: z.object({ url: z.string() }).optional(),
+    }),
+  ),
+})
+
+/** the photos looked at and every one tried, kept in the vetting's instructions for the step after */
+const sourcesSchema = z.object({
+  photos: z.array(z.object({ imageUrl: z.string(), pageUrl: z.string() })),
+  tried: z.array(z.string()),
+})
+
+const SOURCES = 'For reference, where each photo was found: '
 
 const verdictSchema = z.object({
   verdicts: z.array(
@@ -343,7 +386,12 @@ export type SpineJob =
       /** how many found photos are being looked at, while vetting */
       photos?: number
     }
-  | { status: 'done'; candidates: SpineCandidate[] }
+  | {
+      status: 'done'
+      candidates: SpineCandidate[]
+      /** every photo URL the search tried, shown or not, for searching again to skip */
+      tried: string[]
+    }
   | { status: 'done'; image: string }
 
 type Step = 'search' | 'vetting' | 'drawing'
@@ -376,8 +424,86 @@ const coverImage = (coverJpeg: Buffer | null) =>
     : []
 
 /**
- * Starts ChatGPT searching the web for photos that show the book's spine,
- * other than those the reader has already turned down (`seen`).
+ * What a book is looked up by in image search: the book itself, as shops show
+ * it in 3D or from the side, its spine, and the box set a series comes in.
+ */
+function imageQueries({ title, authors, series }: SpineBook): string[] {
+  const author = authors[0] ?? ''
+  return [
+    `${title} ${author} book`,
+    `${title} ${author} book spine`,
+    series && `${series} ${author} box set`,
+  ]
+    .filter((query): query is string => Boolean(query))
+    .map((query) => query.replace(/\s+/g, ' ').trim())
+}
+
+/** The photos Brave's image search finds for one query, as it ranks them. */
+async function searchImages(key: string, query: string): Promise<Found[]> {
+  const url = new URL('https://api.search.brave.com/res/v1/images/search')
+  url.search = new URLSearchParams({
+    q: query,
+    count: String(IMAGE_SEARCH_COUNT),
+    safesearch: 'strict',
+  }).toString()
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'X-Subscription-Token': key },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) {
+    throw new SpineJobError(`The image search failed (${response.status})`)
+  }
+
+  const { results } = imageSearchSchema.parse(await response.json())
+  return results.flatMap(({ url: pageUrl, properties, thumbnail }) => {
+    const imageUrl = properties?.url ?? thumbnail?.src
+    return imageUrl
+      ? [{ imageUrl, pageUrl, ...(thumbnail && { copyUrl: thumbnail.src }) }]
+      : []
+  })
+}
+
+/**
+ * Photos of the book from image search, the queries' best taken in turn, other
+ * than those the reader has already been shown or the search already tried.
+ */
+async function imageSearch(
+  key: string,
+  book: SpineBook,
+  seen: string[],
+): Promise<Found[]> {
+  const searched = await Promise.allSettled(
+    imageQueries(book).map((query) => searchImages(key, query)),
+  )
+  const lists = searched.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value] : [],
+  )
+  if (lists.length === 0) {
+    throw new SpineJobError('The image search failed, try again')
+  }
+
+  const skip = new Set(seen)
+  const found = new Map<string, Found>()
+  const longest = Math.max(...lists.map((list) => list.length))
+  for (let rank = 0; rank < longest && found.size < MAX_FOUND; rank++) {
+    for (const photo of lists.flatMap((list) => list[rank] ?? [])) {
+      const imageUrl = largest(photo.imageUrl)
+      if (skip.has(imageUrl) || (photo.copyUrl && skip.has(photo.copyUrl))) {
+        continue
+      }
+      if (found.size < MAX_FOUND && !found.has(imageUrl)) {
+        found.set(imageUrl, { ...photo, imageUrl })
+      }
+    }
+  }
+  return [...found.values()]
+}
+
+/**
+ * Starts looking for photos that show the book's spine, other than those the
+ * reader has already turned down or a search tried (`seen`): with Brave's image
+ * search when there is a key for it, which is quick and goes straight on to
+ * ChatGPT looking at them, otherwise with ChatGPT searching the web.
  */
 export async function startSpineSearch(
   openai: OpenAI,
@@ -385,7 +511,13 @@ export async function startSpineSearch(
   book: SpineBook,
   cover: Buffer | null,
   seen: string[] = [],
+  imageSearchKey?: string,
 ): Promise<SpineJob> {
+  if (imageSearchKey) {
+    const photos = await imageSearch(imageSearchKey, book, seen)
+    return startVetting(openai, bookId, photos, book, cover)
+  }
+
   const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
 
   const search = await openai.responses.create({
@@ -408,7 +540,7 @@ export async function startSpineSearch(
               'Good sources: bookshop and publisher listings with angled or 3D product shots, back-and-spine images, photos of the book on a shelf, second-hand listings with several photos.',
               'Few photos are labelled as spines, so don’t only search for the word spine: search for the book itself, its 3D cover or product shots and its listings, and keep photos where the spine shows tilted, at an angle or in perspective beside the cover. Those are as good as a straight one, as it gets straightened afterwards.',
               seen.length > 0 &&
-                `The reader has already been shown these photos and none was right; find different ones, never these:\n${seen.join('\n')}`,
+                `These photos were already tried or shown to the reader and none was right; find different ones, from other sites or with other searches, never these:\n${seen.join('\n')}`,
               'Be quick: a few searches are enough, stop once you have some good photos.',
               `Give up to ${MAX_FOUND} direct image URLs (the image file itself, e.g. ending in .jpg or served by an image CDN, not the page), each with the page it is on. Only include URLs you actually saw in search results or pages; never guess one.`,
             ]
@@ -459,9 +591,8 @@ const largest = (imageUrl: string) =>
     ? imageUrl.replace(/\/s-l\d+\./, '/s-l1600.')
     : imageUrl
 
-/** The photos a finished search found, each once and at their largest, as many as are looked at. */
-async function foundPhotos(openai: OpenAI, searchId: string) {
-  const search = await openai.responses.retrieve(searchId)
+/** The photos a finished ChatGPT search found, each once and at their largest, as many as are looked at. */
+function foundPhotos(search: OpenAI.Responses.Response): Found[] {
   const found = foundSchema
     .parse(JSON.parse(search.output_text))
     .candidates.map((c) => ({ ...c, imageUrl: largest(c.imageUrl) }))
@@ -472,33 +603,55 @@ async function foundPhotos(openai: OpenAI, searchId: string) {
 }
 
 /**
+ * A found photo shrunk for looking at, or the image search's own copy of it
+ * when its site turns the server away, then found at the copy's URL.
+ */
+async function download(
+  photo: Found,
+): Promise<{ photo: Found; jpeg: Buffer } | null> {
+  for (const imageUrl of [photo.imageUrl, photo.copyUrl]) {
+    const image = imageUrl && (await fetchImage(imageUrl))
+    if (!image) continue
+    try {
+      return {
+        photo: { ...photo, imageUrl },
+        jpeg: await shrink(image, LOOK_SIDE),
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/**
  * Downloads the photos the search found and starts ChatGPT looking at each
  * beside the cover, to keep only those that really show the spine.
  */
 async function startVetting(
   openai: OpenAI,
   bookId: string,
-  searchId: string,
+  photos: Found[],
   book: SpineBook,
   cover: Buffer | null,
 ): Promise<SpineJob> {
-  const photos = await foundPhotos(openai, searchId)
-  const downloaded = (
-    await Promise.all(
-      photos.map(async (photo, index) => {
-        const image = await fetchImage(photo.imageUrl)
-        if (!image) return null
-        try {
-          return { index, jpeg: await shrink(image, LOOK_SIDE) }
-        } catch {
-          return null
-        }
-      }),
-    )
-  ).filter(<T>(photo: T | null): photo is T => photo !== null)
-  if (downloaded.length === 0) return { status: 'done', candidates: [] }
+  // every photo is skipped when searching again, even one that never came
+  const tried = photos.map(({ imageUrl }) => imageUrl)
+  const downloaded = (await Promise.all(photos.map(download))).filter(
+    <T>(photo: T | null): photo is T => photo !== null,
+  )
+  if (downloaded.length === 0) {
+    return { status: 'done', candidates: [], tried }
+  }
 
   const coverJpeg = cover && (await shrink(cover, LOOK_SIDE))
+  const sources: z.infer<typeof sourcesSchema> = {
+    photos: downloaded.map(({ photo: { imageUrl, pageUrl } }) => ({
+      imageUrl,
+      pageUrl,
+    })),
+    tried,
+  }
   const vetting = await openai.responses.create({
     model: OPENAI_LOOK_MODEL,
     background: true,
@@ -506,10 +659,11 @@ async function startVetting(
     metadata: {
       step: 'vetting' satisfies Step,
       book: bookId,
-      search: searchId,
-      // which of the search's photos were looked at, in the order shown
-      photos: downloaded.map(({ index }) => index).join(','),
+      photos: String(downloaded.length),
     },
+    // nothing is kept between the steps, so the photos' URLs travel here, in
+    // the order they are numbered, where the model may glean the shop as well
+    instructions: SOURCES + JSON.stringify(sources),
     input: [
       {
         role: 'user',
@@ -576,12 +730,13 @@ async function startVetting(
  * edition before others, and those it doubted last, as it may be wrong.
  */
 async function vettedPhotos(
-  openai: OpenAI,
   vetting: OpenAI.Responses.Response,
-  metadata: Record<string, string>,
-): Promise<SpineCandidate[]> {
-  const photos = await foundPhotos(openai, metadata['search'] ?? '')
-  const shown = (metadata['photos'] ?? '').split(',').map(Number)
+): Promise<{ candidates: SpineCandidate[]; tried: string[] }> {
+  const instructions =
+    typeof vetting.instructions === 'string' ? vetting.instructions : ''
+  const { photos, tried } = sourcesSchema.parse(
+    JSON.parse(instructions.slice(SOURCES.length)),
+  )
   const { verdicts } = verdictSchema.parse(JSON.parse(vetting.output_text))
 
   const rank = ({ showsSpine, sameEdition }: (typeof verdicts)[number]) =>
@@ -589,7 +744,7 @@ async function vettedPhotos(
   const kept = verdicts
     .sort((a, b) => rank(b) - rank(a))
     .flatMap(({ index, note, showsSpine }) => {
-      const photo = photos[shown[index] ?? -1]
+      const photo = photos[index]
       return photo ? [{ ...photo, note, showsSpine }] : []
     })
 
@@ -617,9 +772,12 @@ async function vettedPhotos(
       }
     }),
   )
-  return candidates.filter(
-    (candidate): candidate is SpineCandidate => candidate !== null,
-  )
+  return {
+    candidates: candidates.filter(
+      (candidate): candidate is SpineCandidate => candidate !== null,
+    ),
+    tried,
+  }
 }
 
 /**
@@ -683,6 +841,7 @@ export async function startSpineDrawing(
               siblings.length > 0 &&
                 `The spines of other volumes of the same series follow: ${volumes}. Series share a design, so wherever this photo shows the same kind of element, draw it the way they do: the spine colour and its bands, where and how the volume number sits, the series title, the author’s name, the publisher logo and their fonts. Use this volume’s own number and title from the photo, never theirs, and where the photo clearly differs from them, keep the photo.`,
               'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
+              book.pages && spineShape(book.pages),
               'Straighten it by its own edges. Everything in the photo outside the spine’s edges is not part of the book: shelf, wall, table, neighbouring books, and the wedges of background a tilted spine leaves in the corners of the photo. Never carry any of it into the drawing, not even as a thin strip or triangle along a side, the top or the bottom; the spine’s own colour and design run right up to every edge. Where the photo cuts a part of the spine off, continue the spine’s own design there.',
               'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
             ]
@@ -744,8 +903,13 @@ export async function followSpineJob(
 
   const step = metadata['step'] as Step
   if (response.status === 'queued' || response.status === 'in_progress') {
-    const photos = metadata['photos']?.split(',').length
-    return working(jobId, step, response.status === 'queued', photos)
+    const photos = metadata['photos'] && Number(metadata['photos'])
+    return working(
+      jobId,
+      step,
+      response.status === 'queued',
+      photos || undefined,
+    )
   }
   if (response.status !== 'completed') {
     throw new SpineJobError(
@@ -762,13 +926,10 @@ export async function followSpineJob(
   switch (step) {
     case 'search': {
       const { book, cover } = await spineBook()
-      return startVetting(openai, bookId, jobId, book, cover)
+      return startVetting(openai, bookId, foundPhotos(response), book, cover)
     }
     case 'vetting':
-      return {
-        status: 'done',
-        candidates: await vettedPhotos(openai, response, metadata),
-      }
+      return { status: 'done', ...(await vettedPhotos(response)) }
     case 'drawing':
       return {
         status: 'done',

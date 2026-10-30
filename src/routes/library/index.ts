@@ -60,6 +60,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
 
   const blobToken = fastify.config.BLOB_READ_WRITE_TOKEN || undefined
   const aiSecret = keysSecret(fastify.config.AI_KEYS_SECRET)
+  const imageSearchKey = fastify.config.BRAVE_SEARCH_API_KEY || undefined
 
   /**
    * An OpenAI client on the reader's own key, or the status and message to
@@ -114,6 +115,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         isbn: true,
         series: true,
         seriesNumber: true,
+        pages: true,
         coverUrl: true,
       },
       where: { id },
@@ -497,6 +499,7 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           found.book,
           found.cover,
           request.body?.seen,
+          imageSearchKey,
         )
       } catch (error) {
         request.log.warn(error, 'spine search failed')

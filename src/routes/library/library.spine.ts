@@ -257,7 +257,16 @@ const verdictSchema = z.object({
  * step it is and carries what the next step needs.
  */
 export type SpineJob =
-  | { status: 'working'; job: string }
+  | {
+      status: 'working'
+      job: string
+      /** which step is running, so the reader can be told */
+      step: Step
+      /** still waiting its turn at OpenAI */
+      queued: boolean
+      /** how many found photos are being looked at, while vetting */
+      photos?: number
+    }
   | { status: 'done'; candidates: SpineCandidate[] }
   | { status: 'done'; image: string }
 
@@ -266,7 +275,18 @@ type Step = 'search' | 'vetting' | 'drawing'
 /** A step that ran but came to nothing, with what to tell the reader. */
 export class SpineJobError extends Error {}
 
-const working = (job: string): SpineJob => ({ status: 'working', job })
+const working = (
+  job: string,
+  step: Step,
+  queued = true,
+  photos?: number,
+): SpineJob => ({
+  status: 'working',
+  job,
+  step,
+  queued,
+  ...(photos !== undefined && { photos }),
+})
 
 const coverImage = (coverJpeg: Buffer | null) =>
   coverJpeg
@@ -341,7 +361,7 @@ export async function startSpineSearch(
     },
   })
 
-  return working(search.id)
+  return working(search.id, 'search')
 }
 
 /** The photos a finished search found, each once, as many as are looked at. */
@@ -448,7 +468,7 @@ async function startVetting(
     },
   })
 
-  return working(vetting.id)
+  return working(vetting.id, 'vetting', true, downloaded.length)
 }
 
 /** The photos ChatGPT kept, the cover's own edition first, each with a small preview. */
@@ -549,7 +569,7 @@ export async function startSpineDrawing(
     ],
   })
 
-  return working(drawing.id)
+  return working(drawing.id, 'drawing')
 }
 
 /** The painted spine cut out of the white it stands on, upright, as a PNG. */
@@ -591,8 +611,10 @@ export async function followSpineJob(
     throw new SpineJobError('That search isn’t for this book')
   }
 
+  const step = metadata['step'] as Step
   if (response.status === 'queued' || response.status === 'in_progress') {
-    return working(jobId)
+    const photos = metadata['photos']?.split(',').length
+    return working(jobId, step, response.status === 'queued', photos)
   }
   if (response.status !== 'completed') {
     throw new SpineJobError(
@@ -600,7 +622,7 @@ export async function followSpineJob(
     )
   }
 
-  switch (metadata['step'] as Step) {
+  switch (step) {
     case 'search': {
       const { book, cover } = await spineBook()
       return startVetting(openai, bookId, jobId, book, cover)

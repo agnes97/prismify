@@ -193,7 +193,7 @@ interface Details {
   seasons?: { season_number: number; episode_count: number }[]
   number_of_seasons?: number
   videos?: { results: Video[] }
-  external_ids?: { imdb_id?: string | null }
+  external_ids?: { imdb_id?: string | null; tvdb_id?: number | null }
 }
 
 /** The official YouTube trailer, else any trailer, else a teaser. */
@@ -230,19 +230,31 @@ async function collectionOrder(
   }
 }
 
-/** The show on TVmaze by its IMDb id, or null when TVmaze doesn't have it or can't be reached. */
-async function tvmazeIdFor(imdbId: string): Promise<number | null> {
-  try {
-    const response = await fetch(
-      `${TVMAZE_URL}/lookup/shows?imdb=${encodeURIComponent(imdbId)}`,
-      { signal: AbortSignal.timeout(3000) },
-    )
-    if (!response.ok) return null
-    const show = (await response.json()) as { id?: unknown }
-    return typeof show.id === 'number' ? show.id : null
-  } catch {
-    return null
+/**
+ * The show on TVmaze by its IMDb id, else its TheTVDB id (TVmaze lacks IMDb ids
+ * for many new shows), or null when TVmaze doesn't have it or can't be reached.
+ */
+async function tvmazeIdFor(
+  imdbId: string | null,
+  tvdbId: number | null,
+): Promise<number | null> {
+  const lookups = [
+    imdbId && `imdb=${encodeURIComponent(imdbId)}`,
+    tvdbId && `thetvdb=${tvdbId}`,
+  ].filter((lookup) => !!lookup)
+  for (const lookup of lookups) {
+    try {
+      const response = await fetch(`${TVMAZE_URL}/lookup/shows?${lookup}`, {
+        signal: AbortSignal.timeout(3000),
+      })
+      if (!response.ok) continue
+      const show = (await response.json()) as { id?: unknown }
+      if (typeof show.id === 'number') return show.id
+    } catch {
+      // try the next id
+    }
   }
+  return null
 }
 
 /**
@@ -274,7 +286,8 @@ export async function fetchTitle(
   const [order, tvmazeId] = await Promise.all([
     collection ? collectionOrder(token, collection.id, tmdbId) : null,
     kind === CinemaKind.TV
-      ? known?.tvmazeId ?? (imdbId ? tvmazeIdFor(imdbId) : null)
+      ? known?.tvmazeId ??
+        tvmazeIdFor(imdbId, details.external_ids?.tvdb_id ?? null)
       : null,
   ])
 

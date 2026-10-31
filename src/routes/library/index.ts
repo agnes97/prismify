@@ -29,6 +29,7 @@ import {
 } from './library.cover.js'
 import {
   fetchImage,
+  findCoverPhotos,
   findSpinePhotos,
   followSpineJob,
   type SeriesSpine,
@@ -504,6 +505,51 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         )
       } catch (error) {
         request.log.warn(error, 'spine search failed')
+        const problem = spineProblem(error)
+        return reply.status(problem.status).send({ message: problem.message })
+      }
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().get(
+    '/books/:id/cover/candidates',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+        querystring: z.object({
+          round: z.coerce.number().int().min(0).max(10).default(0),
+        }),
+      },
+    },
+    async function (request, reply) {
+      // found as spines are, with the library's own image search key; the
+      // reader crops the one they pick and saves it through PUT /books/:id/cover
+      if (!imageSearchKey) {
+        return reply
+          .status(503)
+          .send({ message: 'Searching for covers isn’t available right now' })
+      }
+
+      const book = await fastify.prisma.libraryBook.findUnique({
+        select: {
+          title: true,
+          authors: true,
+          year: true,
+          isbn: true,
+          series: true,
+          seriesNumber: true,
+          pages: true,
+        },
+        where: { id: request.params.id },
+      })
+      if (!book) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      try {
+        return await findCoverPhotos(imageSearchKey, book, request.query.round)
+      } catch (error) {
+        request.log.warn(error, 'cover search failed')
         const problem = spineProblem(error)
         return reply.status(problem.status).send({ message: problem.message })
       }

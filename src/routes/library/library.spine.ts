@@ -440,6 +440,29 @@ const largest = (imageUrl: string) =>
     : imageUrl
 
 /**
+ * What a book's cover is looked up by in image search, round by round as for
+ * its spine: first the cover itself and by its ISBN; then its bindings; then
+ * its edition and the ebook, whose cover shops show flat.
+ */
+function coverQueries(
+  { title, authors, year, isbn }: SpineBook,
+  round: number,
+): string[] {
+  const author = authors[0] ?? ''
+  const rounds = [
+    [`${title} ${author} book cover`, isbn && `${isbn} cover`],
+    [`${title} ${author} hardcover`, `${title} ${author} paperback`],
+    [
+      year && `${title} ${author} ${year} edition cover`,
+      `${title} ${author} ebook`,
+    ],
+  ]
+  return (rounds[round] ?? [])
+    .filter((query): query is string => Boolean(query))
+    .map((query) => query.replace(/\s+/g, ' ').trim())
+}
+
+/**
  * Every photo image search finds for a `round` of the queries, the queries'
  * best taken in turn, each once; and whether a further round would look again.
  */
@@ -479,6 +502,14 @@ async function findPhotos(
  */
 export function findSpinePhotos(key: string, book: SpineBook, round = 0) {
   return findPhotos(key, (at) => imageQueries(book, at), round)
+}
+
+/**
+ * Every photo image search finds of the book's cover in a `round` of
+ * searching, for the reader to pick and crop it out of.
+ */
+export function findCoverPhotos(key: string, book: SpineBook, round = 0) {
+  return findPhotos(key, (at) => coverQueries(book, at), round)
 }
 
 /**

@@ -362,16 +362,35 @@ const working = (job: string, step: Step, queued = true): SpineJob => ({
 })
 
 /**
- * What a book is looked up by in image search: the book itself, as shops show
- * it in 3D or from the side, its spine, and the box set a series comes in.
+ * What a book is looked up by in image search, round by round, each searching
+ * again finding photos the earlier ones may not have: first the book itself,
+ * as shops show it in 3D or from the side, its spine, and the box set a series
+ * comes in; then its bindings and shelves of it; then its ISBN, edition and
+ * the series' volumes side by side.
  */
-function imageQueries({ title, authors, series }: SpineBook): string[] {
+function imageQueries(
+  { title, authors, year, isbn, series, seriesNumber }: SpineBook,
+  round: number,
+): string[] {
   const author = authors[0] ?? ''
-  return [
-    `${title} ${author} book`,
-    `${title} ${author} book spine`,
-    series && `${series} ${author} box set`,
+  const rounds = [
+    [
+      `${title} ${author} book`,
+      `${title} ${author} book spine`,
+      series && `${series} ${author} box set`,
+    ],
+    [
+      `${title} ${author} hardcover`,
+      `${title} ${author} paperback`,
+      `${title} ${author} bookshelf`,
+    ],
+    [
+      isbn,
+      year && `${title} ${author} ${year} edition`,
+      series && `${series} ${seriesNumber ?? ''} ${author} books spines`,
+    ],
   ]
+  return (rounds[round] ?? [])
     .filter((query): query is string => Boolean(query))
     .map((query) => query.replace(/\s+/g, ' ').trim())
 }
@@ -421,15 +440,20 @@ const largest = (imageUrl: string) =>
     : imageUrl
 
 /**
- * Every photo image search finds of the book, for the reader to pick the one
- * that shows its spine: the queries' best taken in turn, each once.
+ * Every photo image search finds for a `round` of the queries, the queries'
+ * best taken in turn, each once; and whether a further round would look again.
  */
-export async function findSpinePhotos(
+async function findPhotos(
   key: string,
-  book: SpineBook,
-): Promise<SpineCandidate[]> {
+  queriesFor: (round: number) => string[],
+  round: number,
+): Promise<{ candidates: SpineCandidate[]; more: boolean }> {
+  const queries = queriesFor(round)
+  const more = queriesFor(round + 1).length > 0
+  if (queries.length === 0) return { candidates: [], more }
+
   const searched = await Promise.allSettled(
-    imageQueries(book).map((query) => searchImages(key, query)),
+    queries.map((query) => searchImages(key, query)),
   )
   const lists = searched.flatMap((result) =>
     result.status === 'fulfilled' ? [result.value] : [],
@@ -446,7 +470,15 @@ export async function findSpinePhotos(
       if (!found.has(imageUrl)) found.set(imageUrl, { ...photo, imageUrl })
     }
   }
-  return [...found.values()]
+  return { candidates: [...found.values()], more }
+}
+
+/**
+ * Every photo image search finds of the book in a `round` of searching, for
+ * the reader to pick the one that shows its spine.
+ */
+export function findSpinePhotos(key: string, book: SpineBook, round = 0) {
+  return findPhotos(key, (at) => imageQueries(book, at), round)
 }
 
 /**

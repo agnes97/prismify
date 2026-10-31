@@ -476,6 +476,10 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     {
       schema: {
         params: z.object({ id: z.string() }),
+        // each round of searching again looks the book up in other ways
+        querystring: z.object({
+          round: z.coerce.number().int().min(0).max(10).default(0),
+        }),
       },
     },
     async function (request, reply) {
@@ -493,9 +497,11 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       try {
-        return {
-          candidates: await findSpinePhotos(imageSearchKey, found.book),
-        }
+        return await findSpinePhotos(
+          imageSearchKey,
+          found.book,
+          request.query.round,
+        )
       } catch (error) {
         request.log.warn(error, 'spine search failed')
         const problem = spineProblem(error)

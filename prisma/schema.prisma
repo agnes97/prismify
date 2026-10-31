@@ -103,6 +103,12 @@ model Profile {
 
   LibraryRead  LibraryReading[] @relation("LibraryReadingsRead")
   LibraryAdded LibraryReading[] @relation("LibraryReadingsAdded")
+
+  CinemaWatched    CinemaEntry[]     @relation("CinemaEntriesViewer")
+  CinemaAdded      CinemaEntry[]     @relation("CinemaEntriesAdded")
+  CinemaLinksSent  CinemaLink[]      @relation("CinemaLinksFrom")
+  CinemaLinksGot   CinemaLink[]      @relation("CinemaLinksTo")
+  CinemaPreference CinemaPreference?
 }
 
 // CV
@@ -191,4 +197,84 @@ model LibraryReading {
   createdAt DateTime    @default(now())
 
   @@index([readById])
+}
+
+// Cinema
+enum CinemaKind {
+  MOVIE
+  TV
+}
+
+enum CinemaState {
+  UPCOMING
+  WATCHING
+  WATCHED
+}
+
+model CinemaTitle {
+  id               String        @id // TMDB id with its kind, e.g. "movie:603" or "tv:1399"
+  kind             CinemaKind
+  title            String
+  year             Int?
+  genres           String[]      @default([]) // TMDB's genre names, in TMDB's order
+  originalLanguage String?
+  posterUrl        String?
+  backdropUrl      String?
+  overview         String?
+  trailerKey       String? // the YouTube video of its trailer
+  collection       String? // shared by the films of a franchise that lie flat in stacks, e.g. "The Matrix Collection"
+  collectionOrder  Int? // its place in that franchise by release, from 1
+  tvmazeId         Int? // where its episode schedule is read from
+  imdbId           String?
+  seasons          Int?
+  episodeCounts    Int[]         @default([]) // episodes in each season from season 1, for +1 to roll over
+  status           String? // TMDB's, e.g. "Returning Series", "Ended" or "Released"
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  Entries          CinemaEntry[]
+}
+
+// one person's copy of a title on their shelf
+model CinemaEntry {
+  id          String      @id @default(uuid())
+  Title       CinemaTitle @relation(fields: [titleId], references: [id])
+  titleId     String
+  Viewer      Profile     @relation("CinemaEntriesViewer", fields: [viewerId], references: [id])
+  viewerId    String
+  AddedBy     Profile     @relation("CinemaEntriesAdded", fields: [addedById], references: [id])
+  addedById   String
+  state       CinemaState
+  season      Int? // the last episode watched, for series
+  episode     Int? // 0 before the season's first
+  watchedYear Int?
+  watchedDate DateTime?   @db.Date // null when only the year is remembered
+  togetherId  String? // shared by the entries of people who watch it together
+  mainGenre   String? // the genre picked to style it by over TMDB's first
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([viewerId, titleId])
+  @@index([togetherId])
+}
+
+// two people who see each other's shelves, once the invited one accepts
+model CinemaLink {
+  id         String    @id @default(uuid())
+  From       Profile   @relation("CinemaLinksFrom", fields: [fromId], references: [id])
+  fromId     String
+  To         Profile   @relation("CinemaLinksTo", fields: [toId], references: [id])
+  toId       String
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([fromId, toId])
+  @@index([toId])
+}
+
+// whose shelves the cinema opens on
+model CinemaPreference {
+  Profile   Profile  @relation(fields: [profileId], references: [id])
+  profileId String   @id
+  view      String // "everyone", "me", "both", "together" or a linked person's id
+  updatedAt DateTime @updatedAt
 }

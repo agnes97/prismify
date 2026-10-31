@@ -33,10 +33,12 @@ import {
   findSpinePhotos,
   followSpineJob,
   type SeriesSpine,
+  type SeriesVolume,
   type SpineBook,
   type SpineJob,
   SpineJobError,
   startSpineDrawing,
+  startSpineInvention,
   webPhoto,
 } from './library.spine.js'
 import {
@@ -158,6 +160,47 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }),
     )
     return spines.filter((spine): spine is SeriesSpine => spine !== null)
+  }
+
+  /**
+   * The volumes nearest the book in its series that have a spine or a cover,
+   * with both as far as they have them, for an invented spine to carry their
+   * look on; none when it has no series.
+   */
+  async function seriesVolumes(
+    id: string,
+    { series, seriesNumber }: SpineBook,
+  ): Promise<SeriesVolume[]> {
+    if (!series) return []
+    const volumes = await fastify.prisma.libraryBook.findMany({
+      select: { seriesNumber: true, spineUrl: true, coverUrl: true },
+      where: {
+        series,
+        id: { not: id },
+        OR: [{ spineUrl: { not: null } }, { coverUrl: { not: null } }],
+      },
+    })
+    const distance = (number: number | null) =>
+      seriesNumber === null || number === null
+        ? Infinity
+        : Math.abs(number - seriesNumber)
+    // the nearest first, and of two as near, the one with a spine to follow
+    const nearest = volumes
+      .sort(
+        (a, b) =>
+          distance(a.seriesNumber) - distance(b.seriesNumber) ||
+          Number(b.spineUrl !== null) - Number(a.spineUrl !== null),
+      )
+      .slice(0, SERIES_SPINES)
+
+    const found = await Promise.all(
+      nearest.map(async ({ seriesNumber, spineUrl, coverUrl }) => ({
+        seriesNumber,
+        spine: spineUrl ? await fetchImage(spineUrl) : null,
+        cover: coverUrl ? await fetchImage(coverUrl) : null,
+      })),
+    )
+    return found.filter(({ spine, cover }) => spine ?? cover)
   }
 
   /** The photo sent as multipart, or the status and message to refuse it with. */
@@ -556,25 +599,29 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
   )
 
-  fastify.withTypeProvider<ZodTypeProvider>().get(
-    '/spine-photo',
-    {
-      schema: {
-        querystring: z.object({ url: z.string().url() }),
+  // also at /spine-photo, as library clients from before covers were searched
+  // for still ask there
+  for (const path of ['/photo', '/spine-photo']) {
+    fastify.withTypeProvider<ZodTypeProvider>().get(
+      path,
+      {
+        schema: {
+          querystring: z.object({ url: z.string().url() }),
+        },
       },
-    },
-    async function (request, reply) {
-      // a found photo, fetched here as most sites won't let the library read
-      // theirs, for the reader to crop the spine out of
-      const photo = await webPhoto(request.query.url)
-      if (!photo) {
-        return reply
-          .status(400)
-          .send({ message: 'That photo can’t be fetched any more' })
-      }
-      return reply.type('image/jpeg').send(photo)
-    },
-  )
+      async function (request, reply) {
+        // a found photo, fetched here as most sites won't let the library read
+        // theirs, for the reader to crop the spine or cover out of
+        const photo = await webPhoto(request.query.url)
+        if (!photo) {
+          return reply
+            .status(400)
+            .send({ message: 'That photo can’t be fetched any more' })
+        }
+        return reply.type('image/jpeg').send(photo)
+      },
+    )
+  }
 
   fastify.withTypeProvider<ZodTypeProvider>().post(
     '/books/:id/spine/draw',
@@ -626,6 +673,42 @@ const library: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         )
       } catch (error) {
         request.log.warn(error, 'spine drawing failed')
+        const problem = spineProblem(error)
+        return reply.status(problem.status).send({ message: problem.message })
+      }
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().post(
+    '/books/:id/spine/invent',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // for a book no photo of the spine turns up for; drawn and shown as a
+      // drawing after a photo is, and followed through the same jobs
+      const openai = await readersOpenai(request, true)
+      if (!('responses' in openai)) {
+        return reply.status(openai.status).send({ message: openai.message })
+      }
+
+      const found = await spineBook(request.params.id)
+      if (!found) {
+        return reply.status(404).send({ message: 'Book not found' })
+      }
+
+      try {
+        return await startSpineInvention(
+          openai,
+          request.params.id,
+          found.book,
+          found.cover,
+          await seriesVolumes(request.params.id, found.book),
+        )
+      } catch (error) {
+        request.log.warn(error, 'spine invention failed')
         const problem = spineProblem(error)
         return reply.status(problem.status).send({ message: problem.message })
       }

@@ -26,6 +26,13 @@ export type SeriesSpine = {
   spine: Buffer
 }
 
+/** another volume of the book's series, its spine and cover as far as the library has them */
+export type SeriesVolume = {
+  seriesNumber: number | null
+  spine: Buffer | null
+  cover: Buffer | null
+}
+
 /** a photo image search found of the book, for the reader to crop its spine out of */
 export type SpineCandidate = {
   /** the photo on the web */
@@ -366,7 +373,8 @@ const working = (job: string, step: Step, queued = true): SpineJob => ({
  * again finding photos the earlier ones may not have: first the book itself,
  * as shops show it in 3D or from the side, its spine, and the box set a series
  * comes in; then its bindings and shelves of it; then its ISBN, edition and
- * the series' volumes side by side.
+ * the series' volumes side by side; last its special editions and the stacks
+ * of it readers photograph.
  */
 function imageQueries(
   { title, authors, year, isbn, series, seriesNumber }: SpineBook,
@@ -388,6 +396,11 @@ function imageQueries(
       isbn,
       year && `${title} ${author} ${year} edition`,
       series && `${series} ${seriesNumber ?? ''} ${author} books spines`,
+    ],
+    [
+      `${title} ${author} special edition`,
+      `${title} ${author} sprayed edges`,
+      series ? `${series} ${author} book stack` : `${title} book stack`,
     ],
   ]
   return (rounds[round] ?? [])
@@ -541,6 +554,80 @@ export async function startSpineDrawing(
     )
     .join(', ')
 
+  const prompt = [
+    `Draw the spine of the book ${describe(book)}, as a flat, straight-on scan.`,
+    'The first image is a photo that shows this spine, maybe tilted, at an angle, in perspective or blurred.',
+    cover &&
+      'The second image is its front cover, as it is chosen for this book; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
+    edges &&
+      `Measured on the cover, its colour along the left edge is ${edges.left} and along the right edge ${edges.right}. The spine joins the left edge, or the right one for a book read right to left, such as manga. Wherever the spine shares the cover’s background, use that exact colour: the photo’s lighting, shadows and camera tint the colours, so a white cover may look cream or beige and a black one grey in it, but the spine is printed in the cover’s own colours. Only where the photo clearly shows a different colour than the cover, such as a coloured band, keep that colour, matched in the cover’s brightness and tint.`,
+    siblings.length > 0 &&
+      `The spines of other volumes of the same series follow: ${volumes}. Series share a design, so wherever this photo shows the same kind of element, draw it the way they do: the spine colour and its bands, where and how the volume number sits, the series title, the author’s name, the publisher logo and their fonts. Use this volume’s own number and title from the photo, never theirs, and where the photo clearly differs from them, keep the photo.`,
+    'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
+    book.pages && spineShape(book.pages),
+    'Straighten it by its own edges. Everything in the photo outside the spine’s edges is not part of the book: shelf, wall, table, neighbouring books, and the wedges of background a tilted spine leaves in the corners of the photo. Never carry any of it into the drawing, not even as a thin strip or triangle along a side, the top or the bottom; the spine’s own colour and design run right up to every edge. Where the photo cuts a part of the spine off, continue the spine’s own design there.',
+    'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
+  ]
+  return paint(openai, bookId, prompt, jpegs)
+}
+
+/**
+ * Starts ChatGPT inventing the book's spine where no photo of it turns up: the
+ * cover it wraps around from, and the spines and covers of the volumes nearest
+ * it in its series, whose design it carries on.
+ */
+export async function startSpineInvention(
+  openai: OpenAI,
+  bookId: string,
+  book: SpineBook,
+  cover: Buffer | null,
+  volumes: SeriesVolume[] = [],
+): Promise<SpineJob> {
+  // counted from 1, as the prompt names them: the cover, then each volume's spine and cover
+  const images: Buffer[] = cover ? [cover] : []
+  const shown = volumes.map(({ seriesNumber, spine, cover: front }) => {
+    const parts = [
+      ...(spine ? [{ name: 'spine', at: images.push(spine) }] : []),
+      ...(front ? [{ name: 'cover', at: images.push(front) }] : []),
+    ]
+    const volume =
+      seriesNumber === null ? 'another volume' : `volume ${seriesNumber}`
+    return `${volume}: ${parts.map(({ name, at }) => `its ${name} in image ${at}`).join(', ')}`
+  })
+  const jpegs = await Promise.all(images.map((image) => shrink(image, 1536)))
+  const edges = cover && (await coverEdges(cover))
+  const spines = volumes.some(({ spine }) => spine)
+  const covers = volumes.some(({ spine, cover: front }) => spine && front)
+
+  const prompt = [
+    `Design the spine of the book ${describe(book)}, as a flat, straight-on scan. No photo of its real spine can be found, so invent the one it most likely has.`,
+    cover &&
+      'The first image is its front cover; the spine wraps around from it, so carry its background, colours, texture, ornaments and fonts on along the edge without a seam.',
+    edges &&
+      `Measured on the cover, its colour along the left edge is ${edges.left} and along the right edge ${edges.right}. The spine joins the left edge, or the right one for a book read right to left, such as manga; use that exact colour wherever the spine shares the cover’s background.`,
+    shown.length > 0 &&
+      `Other volumes of the same series follow, ${shown.join('; ')}.`,
+    spines &&
+      'Series share a spine design, so follow theirs closely: the spine colour and its bands, where and how the volume number sits, the series title, the author’s name, the publisher logo and their fonts. Use this volume’s own number and title, never theirs.',
+    covers &&
+      'Compare their covers with their spines to see how the series carries a cover onto its spine, and do the same with this cover.',
+    !spines &&
+      shown.length > 0 &&
+      'Their covers show the series’ look; give the spine the lettering and ornaments they share.',
+    'Letter the title and the author’s name along it, reading top to bottom, in the cover’s own fonts; add the volume number where the series shows one. Write nothing else: no blurbs, quotes or made-up publisher names.',
+    'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
+    book.pages && spineShape(book.pages),
+  ]
+  return paint(openai, bookId, prompt, jpegs)
+}
+
+/** Starts ChatGPT painting a spine after the `prompt` and `jpegs`, in the background. */
+async function paint(
+  openai: OpenAI,
+  bookId: string,
+  prompt: (string | false | null | 0)[],
+  jpegs: Buffer[],
+): Promise<SpineJob> {
   const drawing = await openai.responses.create({
     model: OPENAI_TEXT_MODEL,
     background: true,
@@ -549,7 +636,8 @@ export async function startSpineDrawing(
       {
         type: 'image_generation',
         model: OPENAI_IMAGE_MODEL,
-        action: 'edit',
+        // a book with no cover or series to go by is invented from scratch
+        action: jpegs.length > 0 ? 'edit' : 'generate',
         size: '1024x1536',
         quality: 'high',
         output_format: 'png',
@@ -563,22 +651,7 @@ export async function startSpineDrawing(
         content: [
           {
             type: 'input_text',
-            text: [
-              `Draw the spine of the book ${describe(book)}, as a flat, straight-on scan.`,
-              'The first image is a photo that shows this spine, maybe tilted, at an angle, in perspective or blurred.',
-              cover &&
-                'The second image is its front cover, as it is chosen for this book; the spine must join it seamlessly, continuing its background colour, texture and style along the edge.',
-              edges &&
-                `Measured on the cover, its colour along the left edge is ${edges.left} and along the right edge ${edges.right}. The spine joins the left edge, or the right one for a book read right to left, such as manga. Wherever the spine shares the cover’s background, use that exact colour: the photo’s lighting, shadows and camera tint the colours, so a white cover may look cream or beige and a black one grey in it, but the spine is printed in the cover’s own colours. Only where the photo clearly shows a different colour than the cover, such as a coloured band, keep that colour, matched in the cover’s brightness and tint.`,
-              siblings.length > 0 &&
-                `The spines of other volumes of the same series follow: ${volumes}. Series share a design, so wherever this photo shows the same kind of element, draw it the way they do: the spine colour and its bands, where and how the volume number sits, the series title, the author’s name, the publisher logo and their fonts. Use this volume’s own number and title from the photo, never theirs, and where the photo clearly differs from them, keep the photo.`,
-              'Draw only the spine: a tall narrow upright rectangle, perfectly straight and sharp, filling the full height of the image, centred, on a plain pure white background with no shadow.',
-              book.pages && spineShape(book.pages),
-              'Straighten it by its own edges. Everything in the photo outside the spine’s edges is not part of the book: shelf, wall, table, neighbouring books, and the wedges of background a tilted spine leaves in the corners of the photo. Never carry any of it into the drawing, not even as a thin strip or triangle along a side, the top or the bottom; the spine’s own colour and design run right up to every edge. Where the photo cuts a part of the spine off, continue the spine’s own design there.',
-              'Copy the photo’s spine exactly: the same lettering, its words, fonts, sizes, direction (usually reading top to bottom) and placement, the same publisher logo, ornaments and colours. Do not invent text; keep its proportions as a real spine of this thickness.',
-            ]
-              .filter(Boolean)
-              .join('\n'),
+            text: prompt.filter(Boolean).join('\n'),
           },
           ...jpegs.map((jpeg) => ({
             type: 'input_image' as const,

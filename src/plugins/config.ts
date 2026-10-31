@@ -9,6 +9,8 @@ const configSchema = z.object({
   AI_KEYS_SECRET: z.string().optional(),
   // Brave Search API key the library finds photos of spines with; the library can't search for them without it
   BRAVE_SEARCH_API_KEY: z.string().optional(),
+  // TMDB API read access token the cinema searches and details titles with; the cinema can't add titles without it
+  TMDB_TOKEN: z.string().optional(),
 })
 
 declare module 'fastify' {

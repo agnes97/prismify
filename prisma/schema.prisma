@@ -318,6 +318,7 @@ model CinemaRecommendation {
   posterUrl String?
   season    Int? // the season to watch next
   released  DateTime?                @db.Date // the day the film came out; a season's comes from its title
+  airs      String? // when a season TMDB doesn't list yet starts, as AniList has it: an ISO day, month or year
   foundAt   DateTime                 @default(now())
 
   @@unique([profileId, kind, titleId])

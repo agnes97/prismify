@@ -9,6 +9,7 @@ import {
 const TMDB_URL = 'https://api.themoviedb.org/3'
 const TMDB_IMAGES = 'https://image.tmdb.org/t/p'
 const TVMAZE_URL = 'https://api.tvmaze.com'
+const ANILIST_URL = 'https://graphql.anilist.co'
 
 const profileSelect = {
   id: true,
@@ -342,6 +343,97 @@ async function tvmazeIdFor(
   return null
 }
 
+type AniListDate = {
+  year: number | null
+  month: number | null
+  day: number | null
+}
+
+type AniListMedia = {
+  format: string | null
+  status: string | null
+  startDate: AniListDate
+}
+
+// the formats a season of a series comes in, rather than a film, an OVA or a special
+const ANILIST_SEASONS = ['TV', 'TV_SHORT', 'ONA']
+
+const ANILIST_QUERY = `query ($search: String) {
+  Page(perPage: 10) {
+    media(search: $search, type: ANIME, format_in: [TV, TV_SHORT, ONA]) {
+      startDate { year month day }
+      relations {
+        edges {
+          relationType
+          node { format status startDate { year month day } }
+        }
+      }
+    }
+  }
+}`
+
+/** An AniList date as an ISO day, month or year, as far as it is known. */
+function aniListDay({ year, month, day }: AniListDate): string | null {
+  if (year === null) return null
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (month === null) return `${year}`
+  return day === null
+    ? `${year}-${pad(month)}`
+    : `${year}-${pad(month)}-${pad(day)}`
+}
+
+/**
+ * The season of an anime after its last on TMDB, as AniList has it before TMDB
+ * lists it: when it starts as an ISO day, month or year, or null when that
+ * isn't known yet. That last season is found by the series' name and the day
+ * it first aired, a day either way. Null itself when AniList knows of none.
+ */
+async function aniListNextSeason(
+  name: string,
+  lastAired: Date,
+): Promise<{ airs: string | null } | null> {
+  try {
+    const response = await fetch(ANILIST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: ANILIST_QUERY,
+        variables: { search: name },
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) return null
+    const { data } = (await response.json()) as {
+      data?: {
+        Page: {
+          media: (AniListMedia & {
+            relations: {
+              edges: { relationType: string; node: AniListMedia }[]
+            }
+          })[]
+        }
+      }
+    }
+    const last = data?.Page.media.find(({ startDate }) => {
+      const day = aniListDay(startDate)
+      return (
+        day?.length === 10 &&
+        Math.abs(Date.parse(`${day}T00:00:00Z`) - lastAired.getTime()) <=
+          86_400_000
+      )
+    })
+    const next = last?.relations.edges.find(
+      ({ relationType, node }) =>
+        relationType === 'SEQUEL' &&
+        ANILIST_SEASONS.includes(node.format ?? '') &&
+        node.status !== 'CANCELLED',
+    )?.node
+    return next ? { airs: aniListDay(next.startDate) } : null
+  } catch {
+    return null
+  }
+}
+
 /** When each season airs from season 1, up to the first TMDB has no day for yet. */
 function airDates(seasons: { air_date?: string | null }[]): Date[] {
   const days: Date[] = []
@@ -528,6 +620,8 @@ export async function scanRecommendations(
           kind: true,
           title: true,
           year: true,
+          genres: true,
+          originalLanguage: true,
           posterUrl: true,
           status: true,
           tvmazeId: true,
@@ -602,6 +696,10 @@ export async function scanRecommendations(
   const today = now.toISOString().slice(0, 10)
   const people = profileIds ?? [...new Set(entries.map((e) => e.viewerId))]
   const found: Prisma.CinemaRecommendationCreateManyInput[] = []
+  const anime: {
+    next: Prisma.CinemaRecommendationCreateManyInput
+    lastAired: Date
+  }[] = []
 
   for (const profileId of people) {
     const mine = entries.filter((entry) => entry.viewerId === profileId)
@@ -628,17 +726,27 @@ export async function scanRecommendations(
         Title.seasonAirDates.length,
       )
       const last = lastSeasonWatched(entry, Title.seasonAirDates)
+      const next = {
+        profileId,
+        kind: CinemaRecommendationKind.NEXT_SEASON,
+        entryId: entry.id,
+        titleId: entry.titleId,
+        title: Title.title,
+        year: Title.year,
+        posterUrl: Title.posterUrl,
+        season: last + 1,
+      }
+      const lastAired = Title.seasonAirDates.at(-1)
       if (listed > last) {
-        found.push({
-          profileId,
-          kind: CinemaRecommendationKind.NEXT_SEASON,
-          entryId: entry.id,
-          titleId: entry.titleId,
-          title: Title.title,
-          year: Title.year,
-          posterUrl: Title.posterUrl,
-          season: last + 1,
-        })
+        found.push(next)
+      } else if (
+        // every season of an anime on TMDB watched: AniList hears of the next one sooner
+        Title.originalLanguage === 'ja' &&
+        Title.genres.includes('Animation') &&
+        lastAired &&
+        Title.seasonAirDates.length === listed
+      ) {
+        anime.push({ next, lastAired })
       }
     }
 
@@ -674,6 +782,12 @@ export async function scanRecommendations(
       })
     }
   }
+
+  // gently, as AniList allows few calls a minute
+  await settled(anime, 2, async ({ next, lastAired }) => {
+    const season = await aniListNextSeason(next.title, lastAired)
+    if (season) found.push({ ...next, airs: season.airs })
+  })
 
   await prisma.$transaction([
     prisma.cinemaRecommendation.deleteMany({

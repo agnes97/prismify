@@ -316,6 +316,7 @@ model CinemaRecommendation {
   year      Int?
   posterUrl String?
   season    Int? // the season to watch next
+  released  DateTime?                @db.Date // the day the film came out; a season's comes from its title
   foundAt   DateTime                 @default(now())
 
   @@unique([profileId, kind, titleId])

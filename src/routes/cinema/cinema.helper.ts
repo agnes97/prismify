@@ -635,6 +635,7 @@ export async function scanRecommendations(
         title: next.title,
         year: yearOf(next.release_date),
         posterUrl: image('w500', next.poster_path),
+        released: new Date(next.release_date),
       })
     }
   }

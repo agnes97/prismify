@@ -236,25 +236,37 @@ model CinemaTitle {
 
 // one person's copy of a title on their shelf
 model CinemaEntry {
-  id          String      @id @default(uuid())
-  Title       CinemaTitle @relation(fields: [titleId], references: [id])
-  titleId     String
-  Viewer      Profile     @relation("CinemaEntriesViewer", fields: [viewerId], references: [id])
-  viewerId    String
-  AddedBy     Profile     @relation("CinemaEntriesAdded", fields: [addedById], references: [id])
-  addedById   String
-  state       CinemaState
-  season      Int? // the last episode watched, for series
-  episode     Int? // 0 before the season's first
-  watchedYear Int?
-  watchedDate DateTime?   @db.Date // null when only the year is remembered
-  togetherId  String? // shared by the entries of people who watch it together
-  mainGenre   String? // the genre picked to style it by over TMDB's first
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id         String        @id @default(uuid())
+  Title      CinemaTitle   @relation(fields: [titleId], references: [id])
+  titleId    String
+  Viewer     Profile       @relation("CinemaEntriesViewer", fields: [viewerId], references: [id])
+  viewerId   String
+  AddedBy    Profile       @relation("CinemaEntriesAdded", fields: [addedById], references: [id])
+  addedById  String
+  state      CinemaState
+  season     Int? // the last episode watched, for series
+  episode    Int? // 0 before the season's first
+  togetherId String? // shared by the entries of people who watch it together
+  mainGenre  String? // the genre picked to style it by over TMDB's first
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  Watches    CinemaWatch[]
 
   @@unique([viewerId, titleId])
   @@index([togetherId])
+}
+
+// one viewing of a movie, or of one season of a series; a rewatch is another
+model CinemaWatch {
+  id          String      @id @default(uuid())
+  Entry       CinemaEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  entryId     String
+  season      Int? // null for a movie, or for a series' seasons not told apart
+  watchedYear Int
+  watchedDate DateTime?   @db.Date // null when only the year is remembered
+  createdAt   DateTime    @default(now())
+
+  @@index([entryId])
 }
 
 // two people who see each other's shelves, once the invited one accepts

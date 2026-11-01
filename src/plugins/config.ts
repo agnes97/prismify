@@ -11,6 +11,8 @@ const configSchema = z.object({
   BRAVE_SEARCH_API_KEY: z.string().optional(),
   // TMDB API read access token the cinema searches and details titles with; the cinema can't add titles without it
   TMDB_TOKEN: z.string().optional(),
+  // Vercel sends it to the cron routes, which refuse every call without it
+  CRON_SECRET: z.string().optional(),
 })
 
 declare module 'fastify' {

@@ -504,10 +504,10 @@ export function lastSeasonWatched(
 const FINISHED = ['Ended', 'Canceled']
 
 /**
- * Looks on TMDB for the next season of every watched series and the next film
- * of every franchise watched so far, for these people or for everyone with
- * shelves, and keeps what it finds as their recommendations. Dropped series
- * and franchises are passed over.
+ * Looks on TMDB for the next season of every watched series, out already or
+ * only announced, and the next film of every franchise watched so far, for
+ * these people or for everyone with shelves, and keeps what it finds as their
+ * recommendations. Dropped series and franchises are passed over.
  */
 export async function scanRecommendations(
   prisma: PrismaClient,
@@ -533,6 +533,7 @@ export async function scanRecommendations(
           tvmazeId: true,
           collection: true,
           collectionId: true,
+          episodeCounts: true,
           seasonAirDates: true,
           released: true,
         },
@@ -563,7 +564,12 @@ export async function scanRecommendations(
   const refreshed = await settled([...stale], 8, async ([id, known]) => {
     const { id: _id, ...data } = await fetchTitle(token, id, known)
     return prisma.cinemaTitle.update({
-      select: { id: true, collectionId: true, seasonAirDates: true },
+      select: {
+        id: true,
+        collectionId: true,
+        episodeCounts: true,
+        seasonAirDates: true,
+      },
       where: { id },
       data,
     })
@@ -572,6 +578,7 @@ export async function scanRecommendations(
     for (const entry of entries) {
       if (entry.titleId === fresh.id) {
         entry.Title.collectionId = fresh.collectionId
+        entry.Title.episodeCounts = fresh.episodeCounts
         entry.Title.seasonAirDates = fresh.seasonAirDates
       }
     }
@@ -614,9 +621,14 @@ export async function scanRecommendations(
       ) {
         continue
       }
-      const aired = Title.seasonAirDates.filter((day) => day <= now).length
+      // out already or still to come: TMDB lists a season once it is
+      // announced, before it has a day
+      const listed = Math.max(
+        Title.episodeCounts.length,
+        Title.seasonAirDates.length,
+      )
       const last = lastSeasonWatched(entry, Title.seasonAirDates)
-      if (aired > last) {
+      if (listed > last) {
         found.push({
           profileId,
           kind: CinemaRecommendationKind.NEXT_SEASON,

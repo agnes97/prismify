@@ -34,7 +34,22 @@ export const titleSelect = {
   seasons: true,
   episodeCounts: true,
   status: true,
+  seasonAirDates: true,
+  released: true,
 } satisfies Prisma.CinemaTitleSelect
+
+const isoDay = (day: Date) => day.toISOString().slice(0, 10)
+
+/** A title as the client gets it, its days as `YYYY-MM-DD`. */
+export const toTitle = ({
+  seasonAirDates,
+  released,
+  ...title
+}: Prisma.CinemaTitleGetPayload<{ select: typeof titleSelect }>) => ({
+  ...title,
+  seasonAirDates: seasonAirDates.map(isoDay),
+  released: released ? isoDay(released) : null,
+})
 
 const watchSelect = {
   id: true,
@@ -92,7 +107,7 @@ export function toEntry({
     // the latest watch
     watched: watches.at(-1)?.watched ?? null,
     watches,
-    title: Title,
+    title: toTitle(Title),
     viewer: Viewer,
     addedBy: AddedBy,
   }
@@ -391,6 +406,10 @@ export async function fetchTitle(
     episodeCounts: seasons.map((season) => season.episode_count),
     seasonAirDates: airDates(seasons),
     status: details.status ?? null,
+    released:
+      kind === CinemaKind.MOVIE && details.release_date
+        ? new Date(`${details.release_date}T00:00:00Z`)
+        : null,
   }
 }
 
@@ -515,6 +534,7 @@ export async function scanRecommendations(
           collection: true,
           collectionId: true,
           seasonAirDates: true,
+          released: true,
         },
       },
       Watches: {
@@ -525,14 +545,18 @@ export async function scanRecommendations(
   })
   const followed = entries.filter((entry) => !entry.droppedAt)
 
-  // fresh seasons of series still going, and the franchise of films from before it was kept
+  // fresh seasons of series still going, the franchise of films from before it
+  // was kept, and the day a film still upcoming comes out, which TMDB may move
+  const now = new Date()
   const stale = new Map(
     followed
-      .filter(({ Title }) =>
+      .filter(({ state, Title }) =>
         Title.kind === CinemaKind.TV
           ? !FINISHED.includes(Title.status ?? '') ||
             Title.seasonAirDates.length === 0
-          : Title.collection !== null && Title.collectionId === null,
+          : (Title.collection !== null && Title.collectionId === null) ||
+            (state === CinemaState.UPCOMING &&
+              (Title.released === null || Title.released > now)),
       )
       .map((entry) => [entry.titleId, entry.Title]),
   )
@@ -568,7 +592,6 @@ export async function scanRecommendations(
     ),
   )
 
-  const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const people = profileIds ?? [...new Set(entries.map((e) => e.viewerId))]
   const found: Prisma.CinemaRecommendationCreateManyInput[] = []

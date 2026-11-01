@@ -25,6 +25,7 @@ import {
   titleSelect,
   TmdbError,
   toEntry,
+  toTitle,
 } from './cinema.helper.js'
 import {
   entryEditSchema,
@@ -805,11 +806,13 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       const { id: _id, ...data } = fresh
-      return fastify.prisma.cinemaTitle.update({
-        select: titleSelect,
-        where: { id: title.id },
-        data,
-      })
+      return toTitle(
+        await fastify.prisma.cinemaTitle.update({
+          select: titleSelect,
+          where: { id: title.id },
+          data,
+        }),
+      )
     },
   )
 

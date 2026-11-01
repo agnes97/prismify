@@ -236,6 +236,7 @@ model CinemaTitle {
   seasons          Int?
   episodeCounts    Int[]         @default([]) // episodes in each season from season 1, for +1 to roll over
   seasonAirDates   DateTime[]    @default([]) @db.Date // when each season from season 1 airs, as far as TMDB has a day
+  released         DateTime?     @db.Date // the day a film comes out, as far as TMDB has one
   status           String? // TMDB's, e.g. "Returning Series", "Ended" or "Released"
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt

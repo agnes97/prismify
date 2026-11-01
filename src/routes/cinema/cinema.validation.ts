@@ -38,11 +38,15 @@ export const entryEditSchema = z
     mainGenre: z.string().nullable().optional(),
     // tagged beloved by its viewer, or not; only ever my own entry
     beloved: z.boolean().optional(),
+    // tagged dropped by its viewer, or not: no more recommendations for it
+    dropped: z.boolean().optional(),
     // the whole together-group's entries, not only mine
     together: z.boolean().optional(),
+    // dropped with all my films of its franchise
+    franchise: z.boolean().optional(),
   })
   .refine(
-    ({ together: _together, ...edit }) =>
+    ({ together: _together, franchise: _franchise, ...edit }) =>
       Object.values(edit).some((value) => value !== undefined),
     { message: 'Nothing to change' },
   )

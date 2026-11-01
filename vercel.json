@@ -5,6 +5,12 @@
       "destination": "/api/serverless.ts"
     }
   ],
+  "crons": [
+    {
+      "path": "/cinema/cron/recommendations",
+      "schedule": "0 6 * * 0"
+    }
+  ],
   "functions": {
     "api/serverless.ts": {
       "maxDuration": 60

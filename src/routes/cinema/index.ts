@@ -1,5 +1,10 @@
-import { randomUUID } from 'node:crypto'
-import { CinemaKind, CinemaState, Prisma } from '@prisma/client'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
+import {
+  CinemaKind,
+  CinemaRecommendationKind,
+  CinemaState,
+  Prisma,
+} from '@prisma/client'
 import { FastifyPluginAsync } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
@@ -15,6 +20,7 @@ import {
   linkedIds,
   nextEpisode,
   parseTitleId,
+  scanRecommendations,
   searchTitles,
   titleSelect,
   TmdbError,
@@ -74,15 +80,32 @@ const badWatched = {
   message: 'The day you watched it must be a real day, not in the future',
 }
 
+// how long after a look for recommendations another one can be asked for
+const RECHECK_AFTER = 10 * 60 * 1000
+
 const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   const tmdbToken = fastify.config.TMDB_TOKEN || undefined
+  const cronSecret = fastify.config.CRON_SECRET || undefined
   const noTmdb = { message: 'Titles can’t be looked up right now' }
 
-  // visitors can search too
+  // visitors can search too, and the cron brings its own secret
   fastify.addHook('onRequest', async (request, reply) => {
-    if (request.routeOptions.url.endsWith('/search')) return
+    const url = request.routeOptions.url
+    if (url.endsWith('/search') || url.endsWith('/cron/recommendations')) {
+      return
+    }
     return fastify.authenticate(request, reply)
   })
+
+  const targetSelect = {
+    id: true,
+    viewerId: true,
+    state: true,
+    season: true,
+    episode: true,
+    updatedAt: true,
+    Watches: { select: { season: true, watchedDate: true } },
+  } satisfies Prisma.CinemaEntrySelect
 
   /**
    * The entries a change to entry `id` applies to: that one, which must be
@@ -105,6 +128,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
             genres: true,
             seasons: true,
             episodeCounts: true,
+            collection: true,
           },
         },
         Watches: { select: { season: true, watchedDate: true } },
@@ -130,14 +154,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     }
 
     const group = await fastify.prisma.cinemaEntry.findMany({
-      select: {
-        id: true,
-        viewerId: true,
-        state: true,
-        season: true,
-        episode: true,
-        Watches: { select: { season: true, watchedDate: true } },
-      },
+      select: targetSelect,
       where: { togetherId: entry.togetherId },
     })
     return group.some((member) => member.viewerId === profileId)
@@ -358,13 +375,33 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       },
     },
     async function (request, reply) {
-      const { state, season, episode, watched, mainGenre, beloved, together } =
-        request.body
+      const {
+        state,
+        season,
+        episode,
+        watched,
+        mainGenre,
+        beloved,
+        dropped,
+        together,
+        franchise,
+      } = request.body
 
-      if (beloved !== undefined && together) {
+      if ((beloved !== undefined || dropped !== undefined) && together) {
         return reply
           .status(400)
-          .send({ message: 'Only you can tag your entry beloved' })
+          .send({ message: 'Only you can tag your entry beloved or dropped' })
+      }
+      const onlyTags = [state, season, watched, mainGenre].every(
+        (value) => value === undefined,
+      )
+      if (
+        franchise &&
+        (dropped === undefined || beloved !== undefined || !onlyTags)
+      ) {
+        return reply
+          .status(400)
+          .send({ message: 'Only dropping goes for the whole franchise' })
       }
 
       const found = await targetsOf(
@@ -375,8 +412,21 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       if (!found.targets) {
         return reply.status(found.status).send({ message: found.message })
       }
-      const { entry, targets } = found
+      const { entry } = found
       const isSeries = entry.Title.kind === CinemaKind.TV
+
+      if (franchise && !entry.Title.collection) {
+        return reply.status(400).send({ message: 'It isn’t in a franchise' })
+      }
+      const targets = franchise
+        ? await fastify.prisma.cinemaEntry.findMany({
+            select: targetSelect,
+            where: {
+              viewerId: request.user.id,
+              Title: { collection: entry.Title.collection },
+            },
+          })
+        : found.targets
 
       if (mainGenre && !entry.Title.genres.includes(mainGenre)) {
         return reply
@@ -393,11 +443,6 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         })
       }
       const when = state === CinemaState.WATCHED ? watchedOn(watched) : null
-      const onlyBeloved =
-        beloved !== undefined &&
-        [state, season, watched, mainGenre].every(
-          (value) => value === undefined,
-        )
       if (state === CinemaState.WATCHED && !when) {
         return reply.status(400).send(badWatched)
       }
@@ -455,9 +500,12 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                 ...(beloved !== undefined && {
                   belovedAt: beloved ? new Date() : null,
                 }),
+                ...(dropped !== undefined && {
+                  droppedAt: dropped ? new Date() : null,
+                }),
                 // tagging it alone keeps its place on the shelves, which sort
                 // by when an entry last changed
-                ...(onlyBeloved && { updatedAt: entry.updatedAt }),
+                ...(onlyTags && { updatedAt: target.updatedAt }),
                 ...(when && {
                   Watches: {
                     create: watchedSeasons.map((watchedSeason) => ({
@@ -764,6 +812,95 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       })
     },
   )
+
+  /**
+   * My recommendations still to act on, and when they were last looked for:
+   * a next season while the series stays on Watched, a film while it isn't on
+   * my shelves, neither once dropped.
+   */
+  async function recommendationsOf(profileId: string) {
+    const [preference, found] = await Promise.all([
+      fastify.prisma.cinemaPreference.findUnique({
+        select: { checkedAt: true },
+        where: { profileId },
+      }),
+      fastify.prisma.cinemaRecommendation.findMany({
+        select: {
+          id: true,
+          kind: true,
+          entryId: true,
+          titleId: true,
+          title: true,
+          year: true,
+          posterUrl: true,
+          season: true,
+          foundAt: true,
+          Entry: { select: { state: true } },
+        },
+        where: { profileId, Entry: { droppedAt: null } },
+        orderBy: { title: 'asc' },
+      }),
+    ])
+    const shelved = new Set(
+      (
+        await fastify.prisma.cinemaEntry.findMany({
+          select: { titleId: true },
+          where: {
+            viewerId: profileId,
+            titleId: { in: found.map((item) => item.titleId) },
+          },
+        })
+      ).map((entry) => entry.titleId),
+    )
+
+    return {
+      checkedAt: preference?.checkedAt ?? null,
+      recommendations: found
+        .filter(({ kind, titleId, Entry }) =>
+          kind === CinemaRecommendationKind.NEXT_SEASON
+            ? Entry.state === CinemaState.WATCHED
+            : !shelved.has(titleId),
+        )
+        .map(({ Entry: _entry, ...item }) => item),
+    }
+  }
+
+  fastify.get('/recommendations', async function (request, _reply) {
+    return recommendationsOf(request.user.id)
+  })
+
+  fastify.post('/recommendations/scan', async function (request, reply) {
+    if (!tmdbToken) return reply.status(503).send(noTmdb)
+
+    // asked again soon after, it answers with what the last look found
+    const preference = await fastify.prisma.cinemaPreference.findUnique({
+      select: { checkedAt: true },
+      where: { profileId: request.user.id },
+    })
+    const checkedAt = preference?.checkedAt?.getTime() ?? 0
+    if (Date.now() - checkedAt > RECHECK_AFTER) {
+      await scanRecommendations(fastify.prisma, tmdbToken, [request.user.id])
+    }
+
+    return recommendationsOf(request.user.id)
+  })
+
+  // Vercel's cron, every Sunday, for everyone with shelves
+  fastify.get('/cron/recommendations', async function (request, reply) {
+    const expected = Buffer.from(`Bearer ${cronSecret ?? ''}`)
+    const given = Buffer.from(request.headers.authorization ?? '')
+    if (
+      !cronSecret ||
+      given.length !== expected.length ||
+      !timingSafeEqual(given, expected)
+    ) {
+      return reply.status(401).send({ message: 'Unauthorized' })
+    }
+    if (!tmdbToken) return reply.status(503).send(noTmdb)
+
+    await scanRecommendations(fastify.prisma, tmdbToken)
+    return reply.status(204).send()
+  })
 
   fastify.get('/links', async function (request, _reply) {
     const links = await fastify.prisma.cinemaLink.findMany({

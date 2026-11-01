@@ -30,13 +30,18 @@ export const titleSelect = {
   status: true,
 } satisfies Prisma.CinemaTitleSelect
 
+const watchSelect = {
+  id: true,
+  season: true,
+  watchedYear: true,
+  watchedDate: true,
+} satisfies Prisma.CinemaWatchSelect
+
 export const entrySelect = {
   id: true,
   state: true,
   season: true,
   episode: true,
-  watchedYear: true,
-  watchedDate: true,
   togetherId: true,
   mainGenre: true,
   createdAt: true,
@@ -44,32 +49,70 @@ export const entrySelect = {
   Title: { select: titleSelect },
   Viewer: { select: profileSelect },
   AddedBy: { select: profileSelect },
+  Watches: { select: watchSelect, orderBy: { createdAt: 'asc' } },
 } satisfies Prisma.CinemaEntrySelect
 
 type EntryRecord = Prisma.CinemaEntryGetPayload<{
   select: typeof entrySelect
 }>
 
+/** A watch's day as `YYYY-MM-DD`, or only `YYYY` when the day is forgotten. */
+const watchedOn = (watch: { watchedYear: number; watchedDate: Date | null }) =>
+  watch.watchedDate
+    ? watch.watchedDate.toISOString().slice(0, 10)
+    : String(watch.watchedYear)
+
+/** Where a watch sorts; one with only a year comes before the dated ones of its year. */
+const watchRank = (watched: string) =>
+  watched.length === 4 ? `${watched}-00-00` : watched
+
 export function toEntry({
-  watchedYear,
-  watchedDate,
   Title,
   Viewer,
   AddedBy,
+  Watches,
   ...entry
 }: EntryRecord) {
+  const watches = Watches.map(({ id, season, ...when }) => ({
+    id,
+    season,
+    watched: watchedOn(when),
+  })).sort((a, b) => watchRank(a.watched).localeCompare(watchRank(b.watched)))
+
   return {
     ...entry,
-    watched: watchedDate
-      ? watchedDate.toISOString().slice(0, 10)
-      : watchedYear === null
-        ? null
-        : String(watchedYear),
+    // the latest watch
+    watched: watches.at(-1)?.watched ?? null,
+    watches,
     title: Title,
     viewer: Viewer,
     addedBy: AddedBy,
   }
 }
+
+/**
+ * The seasons of a series that moving it to Watched marks watched: every one
+ * when it has no progress, else those up to where it got, the season it is
+ * in only once an episode of it is watched.
+ */
+export function finishedSeasons(
+  progress: { season: number | null; episode: number | null },
+  title: { seasons: number | null; episodeCounts: number[] },
+): number[] {
+  const last =
+    progress.season === null
+      ? title.seasons ?? (title.episodeCounts.length || 1)
+      : (progress.episode ?? 0) > 0
+        ? progress.season
+        : progress.season - 1
+  return Array.from({ length: last }, (_, i) => i + 1)
+}
+
+/** Whether `season`·`episode` is the last episode of its season, by TMDB's count. */
+export const endsSeason = (
+  { season, episode }: { season: number; episode: number },
+  episodeCounts: number[],
+) => episode > 0 && episode === episodeCounts[season - 1]
 
 /** The ids of everyone whose shelves are linked with the person's, both ways, once accepted. */
 export async function linkedIds(

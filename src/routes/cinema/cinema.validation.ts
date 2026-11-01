@@ -21,6 +21,8 @@ export const entrySchema = z.object({
   episode: episode.optional(),
   // for a watched title; today when left out
   watched: watched.optional(),
+  // the seasons of a watched series that were watched then; every one when left out
+  seasons: z.array(season).min(1).optional(),
   // me or people linked with me; two or more watch it together
   viewers: z.array(z.string().uuid()).min(1).optional(),
 })
@@ -30,6 +32,7 @@ export const entryEditSchema = z
     state: z.nativeEnum(CinemaState).optional(),
     season: season.optional(),
     episode: episode.optional(),
+    // the day a move to Watched was watched on; today when left out
     watched: watched.optional(),
     // one of the title's genres to style it by, or null for TMDB's first
     mainGenre: z.string().nullable().optional(),
@@ -54,6 +57,19 @@ export const nextSchema = z
     together: z.boolean().optional(),
   })
   .nullish()
+
+// another watch of a title, or of one season of a series
+export const watchSchema = z.object({
+  season: season.optional(),
+  // today when left out
+  watched: watched.optional(),
+  // on the whole together-group's entries, not only mine
+  together: z.boolean().optional(),
+})
+
+export const watchEditSchema = z.object({
+  watched,
+})
 
 export const linkSchema = z.object({
   email: z.string().email(),

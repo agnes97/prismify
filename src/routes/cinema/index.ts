@@ -7,8 +7,10 @@ import { z } from 'zod'
 import { parseRead } from '../library/library.helper.js'
 
 import {
+  endsSeason,
   entrySelect,
   fetchTitle,
+  finishedSeasons,
   isAhead,
   linkedIds,
   nextEpisode,
@@ -26,6 +28,8 @@ import {
   preferenceSchema,
   searchSchema,
   VIEWS,
+  watchEditSchema,
+  watchSchema,
 } from './cinema.validation.js'
 
 const profileSelect = {
@@ -52,19 +56,19 @@ function toLink({ fromId, From, To, ...link }: LinkRecord, profileId: string) {
 }
 
 /**
- * When a title in `state` was watched, stored as a year and maybe a day, or
- * null for a day that doesn't exist or is in the future. A title not watched
- * has none, and one watched without saying when was watched today.
+ * The day a title was watched, stored as a year and maybe a day, or null for
+ * a day that doesn't exist or is in the future; today when left out.
  */
-function watchedFields(state: CinemaState, watched: string | undefined) {
-  if (state !== CinemaState.WATCHED) {
-    return { watchedYear: null, watchedDate: null }
-  }
+function watchedOn(watched: string | undefined) {
   const parsed = parseRead(watched ?? new Date().toISOString().slice(0, 10))
   return (
     parsed && { watchedYear: parsed.readYear, watchedDate: parsed.readDate }
   )
 }
+
+/** Whether a watch was on the same day as `day`, a watch's stored fields. */
+const sameDay = (date: Date | null, day: { watchedDate: Date | null }) =>
+  !!date && !!day.watchedDate && date.getTime() === day.watchedDate.getTime()
 
 const badWatched = {
   message: 'The day you watched it must be a real day, not in the future',
@@ -94,7 +98,15 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         state: true,
         season: true,
         episode: true,
-        Title: { select: { kind: true, genres: true, episodeCounts: true } },
+        Title: {
+          select: {
+            kind: true,
+            genres: true,
+            seasons: true,
+            episodeCounts: true,
+          },
+        },
+        Watches: { select: { season: true, watchedDate: true } },
       },
       where: { id },
     })
@@ -123,6 +135,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         state: true,
         season: true,
         episode: true,
+        Watches: { select: { season: true, watchedDate: true } },
       },
       where: { togetherId: entry.togetherId },
     })
@@ -171,8 +184,13 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         select: {
           titleId: true,
           state: true,
-          watchedYear: true,
           Viewer: { select: profileSelect },
+          // the latest watch
+          Watches: {
+            select: { watchedYear: true },
+            orderBy: { watchedYear: 'desc' },
+            take: 1,
+          },
         },
         where: {
           titleId: { in: results.map((result) => result.id) },
@@ -184,10 +202,10 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         ...result,
         on: entries
           .filter((entry) => entry.titleId === result.id)
-          .map(({ Viewer, state, watchedYear }) => ({
+          .map(({ Viewer, state, Watches }) => ({
             viewer: Viewer,
             state,
-            watchedYear,
+            watchedYear: Watches[0]?.watchedYear ?? null,
           })),
       }))
     },
@@ -217,7 +235,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
     async function (request, reply) {
       const me = request.user.id
-      const { id, state, season, episode, watched } = request.body
+      const { id, state, season, episode, watched, seasons } = request.body
       const viewers = [...new Set(request.body.viewers ?? [me])]
 
       const linked = await linkedIds(fastify.prisma, me)
@@ -231,17 +249,25 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       if (!isSeries && (season !== undefined || episode !== undefined)) {
         return reply.status(400).send({ message: 'Only series have episodes' })
       }
+      if (!isSeries && seasons) {
+        return reply.status(400).send({ message: 'Only series have seasons' })
+      }
+      if (seasons && state !== CinemaState.WATCHED) {
+        return reply
+          .status(400)
+          .send({ message: 'Only a watched series has seasons watched' })
+      }
       if ((season === undefined) !== (episode === undefined)) {
         return reply.status(400).send({
           message: 'Progress needs both the season and the episode',
         })
       }
 
-      const when = watchedFields(state, watched)
+      const when = watchedOn(watched)
       if (!when) return reply.status(400).send(badWatched)
 
       const stored = await fastify.prisma.cinemaTitle.findUnique({
-        select: { id: true },
+        select: { id: true, seasons: true, episodeCounts: true },
         where: { id },
       })
 
@@ -268,6 +294,21 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
             : { season: null, episode: null }
       const togetherId = viewers.length > 1 ? randomUUID() : null
 
+      // a watched title is watched again, a series one watch a season
+      const info = stored ?? {
+        seasons: title?.seasons ?? null,
+        episodeCounts: Array.isArray(title?.episodeCounts)
+          ? title.episodeCounts
+          : [],
+      }
+      const watches =
+        state !== CinemaState.WATCHED
+          ? []
+          : (isSeries
+              ? seasons ?? finishedSeasons(progress, info)
+              : [null]
+            ).map((watchedSeason) => ({ season: watchedSeason, ...when }))
+
       const entries = await fastify.prisma.$transaction(async (transaction) => {
         if (title) {
           await transaction.cinemaTitle.upsert({
@@ -289,14 +330,14 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                 addedById: me,
                 state,
                 ...progress,
-                ...when,
                 togetherId,
+                Watches: { create: watches },
               },
               update: {
                 state,
                 ...progress,
-                ...when,
                 ...(togetherId && { togetherId }),
+                Watches: { create: watches },
               },
             }),
           ),
@@ -339,18 +380,15 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         return reply.status(400).send({ message: 'Only series have episodes' })
       }
 
-      const finalState = state ?? entry.state
-      if (watched !== undefined && finalState !== CinemaState.WATCHED) {
-        return reply
-          .status(400)
-          .send({ message: 'Only a watched title has a day it was watched' })
+      if (watched !== undefined && state !== CinemaState.WATCHED) {
+        return reply.status(400).send({
+          message: 'Only a move to Watched has a day it was watched',
+        })
       }
-      // moving it, or changing when it was watched, sets the day again
-      const when =
-        state !== undefined || watched !== undefined
-          ? watchedFields(finalState, watched)
-          : {}
-      if (!when) return reply.status(400).send(badWatched)
+      const when = state === CinemaState.WATCHED ? watchedOn(watched) : null
+      if (state === CinemaState.WATCHED && !when) {
+        return reply.status(400).send(badWatched)
+      }
 
       const entries = await fastify.prisma.$transaction((transaction) =>
         Promise.all(
@@ -366,14 +404,50 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                     ? { season: null, episode: null }
                     : {}
 
+            // moved to Watched, a movie is watched once more and a series gets a
+            // watch for each season up to where it got that has none yet
+            const watchedSeasons = !when
+              ? []
+              : isSeries
+                ? target.Watches.some((watch) => watch.season === null)
+                  ? []
+                  : finishedSeasons(
+                      {
+                        season:
+                          progress.season === undefined
+                            ? target.season
+                            : progress.season,
+                        episode:
+                          progress.episode === undefined
+                            ? target.episode
+                            : progress.episode,
+                      },
+                      entry.Title,
+                    ).filter(
+                      (number) =>
+                        !target.Watches.some(
+                          (watch) => watch.season === number,
+                        ),
+                    )
+                : target.state === CinemaState.WATCHED
+                  ? []
+                  : [null]
+
             return transaction.cinemaEntry.update({
               select: entrySelect,
               where: { id: target.id },
               data: {
                 ...(state !== undefined && { state }),
                 ...progress,
-                ...when,
                 ...(mainGenre !== undefined && { mainGenre }),
+                ...(when && {
+                  Watches: {
+                    create: watchedSeasons.map((watchedSeason) => ({
+                      season: watchedSeason,
+                      ...when,
+                    })),
+                  },
+                }),
               },
             })
           }),
@@ -424,6 +498,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         })
       }
 
+      const today = watchedOn(undefined)
       const entries = await fastify.prisma.$transaction((transaction) =>
         Promise.all(
           found.targets.map((target) => {
@@ -432,13 +507,27 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
               season: target.season ?? 1,
               episode: target.episode ?? 0,
             }
+            const stays = isAhead(theirs, next)
+            // the last episode of a season watches the season, once a day
+            const finishes =
+              !stays &&
+              today &&
+              endsSeason(next, Title.episodeCounts) &&
+              !target.Watches.some(
+                (watch) =>
+                  watch.season === next.season &&
+                  sameDay(watch.watchedDate, today),
+              )
             return transaction.cinemaEntry.update({
               select: entrySelect,
               where: { id: target.id },
               data: {
-                ...(isAhead(theirs, next) ? theirs : next),
+                ...(stays ? theirs : next),
                 ...(target.state === CinemaState.UPCOMING && {
                   state: CinemaState.WATCHING,
+                }),
+                ...(finishes && {
+                  Watches: { create: { season: next.season, ...today } },
                 }),
               },
             })
@@ -447,6 +536,119 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       )
 
       return entries.map(toEntry)
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().post(
+    '/entries/:id/watches',
+    {
+      schema: {
+        params: z.object({ id: z.string().uuid() }),
+        body: watchSchema,
+      },
+    },
+    async function (request, reply) {
+      const { season, watched, together } = request.body
+
+      const found = await targetsOf(
+        request.params.id,
+        request.user.id,
+        together ?? false,
+      )
+      if (!found.targets) {
+        return reply.status(found.status).send({ message: found.message })
+      }
+      if (found.entry.Title.kind !== CinemaKind.TV && season !== undefined) {
+        return reply.status(400).send({ message: 'Only series have seasons' })
+      }
+
+      const when = watchedOn(watched)
+      if (!when) return reply.status(400).send(badWatched)
+
+      const entries = await fastify.prisma.$transaction((transaction) =>
+        Promise.all(
+          found.targets.map((target) =>
+            transaction.cinemaEntry.update({
+              select: entrySelect,
+              where: { id: target.id },
+              data: {
+                Watches: { create: { season: season ?? null, ...when } },
+              },
+            }),
+          ),
+        ),
+      )
+
+      return reply.status(201).send(entries.map(toEntry))
+    },
+  )
+
+  /** My watch `id` and its entry, or the status and message to refuse with. */
+  async function myWatch(id: string, profileId: string) {
+    const watch = await fastify.prisma.cinemaWatch.findUnique({
+      select: { entryId: true, Entry: { select: { viewerId: true } } },
+      where: { id },
+    })
+    if (!watch) return { status: 404, message: 'Watch not found' } as const
+    return watch.Entry.viewerId === profileId
+      ? { entryId: watch.entryId }
+      : ({
+          status: 403,
+          message: 'Only the viewer can change this watch',
+        } as const)
+  }
+
+  fastify.withTypeProvider<ZodTypeProvider>().patch(
+    '/watches/:id',
+    {
+      schema: {
+        params: z.object({ id: z.string().uuid() }),
+        body: watchEditSchema,
+      },
+    },
+    async function (request, reply) {
+      const found = await myWatch(request.params.id, request.user.id)
+      if (!('entryId' in found)) {
+        return reply.status(found.status).send({ message: found.message })
+      }
+      const when = watchedOn(request.body.watched)
+      if (!when) return reply.status(400).send(badWatched)
+
+      await fastify.prisma.cinemaWatch.update({
+        where: { id: request.params.id },
+        data: when,
+      })
+      const entry = await fastify.prisma.cinemaEntry.findUniqueOrThrow({
+        select: entrySelect,
+        where: { id: found.entryId },
+      })
+
+      return [toEntry(entry)]
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().delete(
+    '/watches/:id',
+    {
+      schema: {
+        params: z.object({ id: z.string().uuid() }),
+      },
+    },
+    async function (request, reply) {
+      const found = await myWatch(request.params.id, request.user.id)
+      if (!('entryId' in found)) {
+        return reply.status(found.status).send({ message: found.message })
+      }
+
+      await fastify.prisma.cinemaWatch.delete({
+        where: { id: request.params.id },
+      })
+      const entry = await fastify.prisma.cinemaEntry.findUniqueOrThrow({
+        select: entrySelect,
+        where: { id: found.entryId },
+      })
+
+      return [toEntry(entry)]
     },
   )
 

@@ -36,6 +36,8 @@ export const entryEditSchema = z
     watched: watched.optional(),
     // one of the title's genres to style it by, or null for TMDB's first
     mainGenre: z.string().nullable().optional(),
+    // tagged beloved by its viewer, or not; only ever my own entry
+    beloved: z.boolean().optional(),
     // the whole together-group's entries, not only mine
     together: z.boolean().optional(),
   })

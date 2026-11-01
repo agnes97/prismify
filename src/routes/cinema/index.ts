@@ -98,6 +98,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         state: true,
         season: true,
         episode: true,
+        updatedAt: true,
         Title: {
           select: {
             kind: true,
@@ -357,8 +358,14 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       },
     },
     async function (request, reply) {
-      const { state, season, episode, watched, mainGenre, together } =
+      const { state, season, episode, watched, mainGenre, beloved, together } =
         request.body
+
+      if (beloved !== undefined && together) {
+        return reply
+          .status(400)
+          .send({ message: 'Only you can tag your entry beloved' })
+      }
 
       const found = await targetsOf(
         request.params.id,
@@ -386,6 +393,11 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         })
       }
       const when = state === CinemaState.WATCHED ? watchedOn(watched) : null
+      const onlyBeloved =
+        beloved !== undefined &&
+        [state, season, watched, mainGenre].every(
+          (value) => value === undefined,
+        )
       if (state === CinemaState.WATCHED && !when) {
         return reply.status(400).send(badWatched)
       }
@@ -440,6 +452,12 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                 ...(state !== undefined && { state }),
                 ...progress,
                 ...(mainGenre !== undefined && { mainGenre }),
+                ...(beloved !== undefined && {
+                  belovedAt: beloved ? new Date() : null,
+                }),
+                // tagging it alone keeps its place on the shelves, which sort
+                // by when an entry last changed
+                ...(onlyBeloved && { updatedAt: entry.updatedAt }),
                 ...(when && {
                   Watches: {
                     create: watchedSeasons.map((watchedSeason) => ({

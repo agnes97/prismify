@@ -44,6 +44,7 @@ export const entrySelect = {
   episode: true,
   togetherId: true,
   mainGenre: true,
+  belovedAt: true,
   createdAt: true,
   updatedAt: true,
   Title: { select: titleSelect },

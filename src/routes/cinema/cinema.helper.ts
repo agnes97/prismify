@@ -350,27 +350,51 @@ type AniListDate = {
 }
 
 type AniListMedia = {
+  id: number
   format: string | null
   status: string | null
   startDate: AniListDate
 }
 
+type AniListSeason = AniListMedia & {
+  relations: { edges: { relationType: string; node: AniListMedia }[] }
+}
+
 // the formats a season of a series comes in, rather than a film, an OVA or a special
 const ANILIST_SEASONS = ['TV', 'TV_SHORT', 'ONA']
 
-const ANILIST_QUERY = `query ($search: String) {
+const ANILIST_FIELDS = `id format status startDate { year month day }
+  relations {
+    edges {
+      relationType
+      node { id format status startDate { year month day } }
+    }
+  }`
+
+const ANILIST_SEARCH = `query ($search: String) {
   Page(perPage: 10) {
     media(search: $search, type: ANIME, format_in: [TV, TV_SHORT, ONA]) {
-      startDate { year month day }
-      relations {
-        edges {
-          relationType
-          node { format status startDate { year month day } }
-        }
-      }
+      ${ANILIST_FIELDS}
     }
   }
 }`
+
+const ANILIST_SEASON = `query ($id: Int) { Media(id: $id) { ${ANILIST_FIELDS} } }`
+
+async function aniList<T>(
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<T | null> {
+  const response = await fetch(ANILIST_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!response.ok) return null
+  const { data } = (await response.json()) as { data?: T }
+  return data ?? null
+}
 
 /** An AniList date as an ISO day, month or year, as far as it is known. */
 function aniListDay({ year, month, day }: AniListDate): string | null {
@@ -382,39 +406,36 @@ function aniListDay({ year, month, day }: AniListDate): string | null {
     : `${year}-${pad(month)}-${pad(day)}`
 }
 
+/** The season after this one on AniList, leaving out films, OVAs, specials and what was cancelled. */
+const aniListSequel = ({ relations }: AniListSeason) =>
+  relations.edges.find(
+    ({ relationType, node }) =>
+      relationType === 'SEQUEL' &&
+      ANILIST_SEASONS.includes(node.format ?? '') &&
+      node.status !== 'CANCELLED',
+  )?.node
+
+// how many parts of a season split in cours to walk past, at most
+const ANILIST_HOPS = 4
+
 /**
  * The season of an anime after its last on TMDB, as AniList has it before TMDB
  * lists it: when it starts as an ISO day, month or year, or null when that
  * isn't known yet. That last season is found by the series' name and the day
- * it first aired, a day either way. Null itself when AniList knows of none.
+ * it first aired, a day either way. AniList keeps each cour apart where TMDB
+ * makes them one season, so the sequels out already are walked past: only one
+ * still to come counts. Null itself when AniList knows of none.
  */
 async function aniListNextSeason(
   name: string,
   lastAired: Date,
 ): Promise<{ airs: string | null } | null> {
   try {
-    const response = await fetch(ANILIST_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: ANILIST_QUERY,
-        variables: { search: name },
-      }),
-      signal: AbortSignal.timeout(5000),
-    })
-    if (!response.ok) return null
-    const { data } = (await response.json()) as {
-      data?: {
-        Page: {
-          media: (AniListMedia & {
-            relations: {
-              edges: { relationType: string; node: AniListMedia }[]
-            }
-          })[]
-        }
-      }
-    }
-    const last = data?.Page.media.find(({ startDate }) => {
+    const found = await aniList<{ Page: { media: AniListSeason[] } }>(
+      ANILIST_SEARCH,
+      { search: name },
+    )
+    let season = found?.Page.media.find(({ startDate }) => {
       const day = aniListDay(startDate)
       return (
         day?.length === 10 &&
@@ -422,13 +443,17 @@ async function aniListNextSeason(
           86_400_000
       )
     })
-    const next = last?.relations.edges.find(
-      ({ relationType, node }) =>
-        relationType === 'SEQUEL' &&
-        ANILIST_SEASONS.includes(node.format ?? '') &&
-        node.status !== 'CANCELLED',
-    )?.node
-    return next ? { airs: aniListDay(next.startDate) } : null
+    for (let hop = 0; season && hop < ANILIST_HOPS; hop++) {
+      const next = aniListSequel(season)
+      if (!next) return null
+      if (next.status === 'NOT_YET_RELEASED') {
+        return { airs: aniListDay(next.startDate) }
+      }
+      season = (
+        await aniList<{ Media: AniListSeason }>(ANILIST_SEASON, { id: next.id })
+      )?.Media
+    }
+    return null
   } catch {
     return null
   }

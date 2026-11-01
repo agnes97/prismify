@@ -835,7 +835,12 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           posterUrl: true,
           season: true,
           foundAt: true,
-          Entry: { select: { state: true } },
+          Entry: {
+            select: {
+              state: true,
+              Title: { select: { seasonAirDates: true } },
+            },
+          },
         },
         where: { profileId, Entry: { droppedAt: null } },
         orderBy: { title: 'asc' },
@@ -861,7 +866,16 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
             ? Entry.state === CinemaState.WATCHED
             : !shelved.has(titleId),
         )
-        .map(({ Entry: _entry, ...item }) => item),
+        // the day the next season first aired, as far as TMDB has one
+        .map(({ Entry, ...item }) => ({
+          ...item,
+          released:
+            item.kind === CinemaRecommendationKind.NEXT_SEASON && item.season
+              ? Entry.Title.seasonAirDates[item.season - 1]
+                  ?.toISOString()
+                  .slice(0, 10) ?? null
+              : null,
+        })),
     }
   }
 

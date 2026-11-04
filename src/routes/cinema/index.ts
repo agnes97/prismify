@@ -20,6 +20,7 @@ import {
   linkedIds,
   nextEpisode,
   parseTitleId,
+  pastCounts,
   scanRecommendations,
   searchTitles,
   titleSelect,
@@ -320,6 +321,11 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           ? title.episodeCounts
           : [],
       }
+      const past =
+        season !== undefined &&
+        pastCounts({ season, episode: episode ?? 0 }, info.episodeCounts)
+      if (past) return reply.status(400).send({ message: past })
+
       const watches =
         state !== CinemaState.WATCHED
           ? []
@@ -437,6 +443,10 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       if (!isSeries && season !== undefined) {
         return reply.status(400).send({ message: 'Only series have episodes' })
       }
+      const past =
+        season !== undefined &&
+        pastCounts({ season, episode: episode ?? 0 }, entry.Title.episodeCounts)
+      if (past) return reply.status(400).send({ message: past })
 
       if (watched !== undefined && state !== CinemaState.WATCHED) {
         return reply.status(400).send({
@@ -451,19 +461,18 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       const entries = await fastify.prisma.$transaction((transaction) =>
         Promise.all(
           targets.map((target) => {
-            // a series moved to Watching starts before its first episode, and one
-            // moved back to Upcoming forgets how far it got
+            // a series moved to Watching starts before its first episode, or goes
+            // on from where it got, which a move to Upcoming or Watched keeps
             const progress =
               season !== undefined
                 ? { season, episode: episode ?? 0 }
                 : isSeries && state === CinemaState.WATCHING
                   ? { season: target.season ?? 1, episode: target.episode ?? 0 }
-                  : state === CinemaState.UPCOMING
-                    ? { season: null, episode: null }
-                    : {}
+                  : {}
 
             // moved to Watched, a movie is watched once more and a series gets a
-            // watch for each season up to where it got that has none yet
+            // watch for each season up to where it got that has none yet, a
+            // dropped one only for the seasons it finished
             const watchedSeasons = !when
               ? []
               : isSeries
@@ -481,6 +490,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                             : progress.episode,
                       },
                       entry.Title,
+                      dropped === true,
                     ).filter(
                       (number) =>
                         !target.Watches.some(
@@ -767,6 +777,45 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       })
 
       return reply.status(204).send()
+    },
+  )
+
+  fastify.withTypeProvider<ZodTypeProvider>().get(
+    '/titles/:id/seasons',
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async function (request, reply) {
+      // a series picked to add as being watched: how far its progress can go
+      const { id } = request.params
+      if (parseTitleId(id)?.kind !== CinemaKind.TV) {
+        return reply.status(400).send({ message: 'Only series have seasons' })
+      }
+      const stored = await fastify.prisma.cinemaTitle.findUnique({
+        select: { seasons: true, episodeCounts: true },
+        where: { id },
+      })
+      if (stored) return stored
+      if (!tmdbToken) return reply.status(503).send(noTmdb)
+
+      let title
+      try {
+        title = await fetchTitle(tmdbToken, id)
+      } catch (error) {
+        if (error instanceof TmdbError) {
+          return reply.status(error.status).send({ message: error.message })
+        }
+        throw error
+      }
+      // kept, so adding it next needn't ask TMDB again
+      return fastify.prisma.cinemaTitle.upsert({
+        select: { seasons: true, episodeCounts: true },
+        where: { id },
+        create: title,
+        update: {},
+      })
     },
   )
 

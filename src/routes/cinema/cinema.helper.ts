@@ -117,19 +117,49 @@ export function toEntry({
 /**
  * The seasons of a series that moving it to Watched marks watched: every one
  * when it has no progress, else those up to where it got, the season it is
- * in only once an episode of it is watched.
+ * in only once an episode of it is watched, or when `dropped` only once its
+ * last episode is.
  */
 export function finishedSeasons(
   progress: { season: number | null; episode: number | null },
   title: { seasons: number | null; episodeCounts: number[] },
+  dropped = false,
 ): number[] {
+  const episode = progress.episode ?? 0
   const last =
     progress.season === null
       ? title.seasons ?? (title.episodeCounts.length || 1)
-      : (progress.episode ?? 0) > 0
+      : (
+            dropped
+              ? endsSeason(
+                  { season: progress.season, episode },
+                  title.episodeCounts,
+                )
+              : episode > 0
+          )
         ? progress.season
         : progress.season - 1
   return Array.from({ length: last }, (_, i) => i + 1)
+}
+
+/**
+ * Why `season`·`episode` can't be where a series got to by TMDB's count, e.g.
+ * "Season 1 has 12 episodes", or null when it can or the count isn't known.
+ */
+export function pastCounts(
+  { season, episode }: { season: number; episode: number },
+  episodeCounts: number[],
+): string | null {
+  if (!episodeCounts.length) return null
+  if (season > episodeCounts.length) {
+    const seasons = episodeCounts.length
+    return `It has ${seasons} season${seasons === 1 ? '' : 's'}`
+  }
+  const inSeason = episodeCounts[season - 1]
+  if (inSeason !== undefined && episode > inSeason) {
+    return `Season ${season} has ${inSeason} episode${inSeason === 1 ? '' : 's'}`
+  }
+  return null
 }
 
 /** Whether `season`·`episode` is the last episode of its season, by TMDB's count. */

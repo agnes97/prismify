@@ -110,6 +110,8 @@ model Profile {
   CinemaLinksGot   CinemaLink[]           @relation("CinemaLinksTo")
   CinemaPreference CinemaPreference?
   CinemaRecommends CinemaRecommendation[]
+
+  XmasTree XmasTree?
 }
 
 // CV
@@ -322,4 +324,13 @@ model CinemaRecommendation {
   foundAt   DateTime                 @default(now())
 
   @@unique([profileId, kind, titleId])
+}
+
+// Xmas Tree
+// one person's arrangement of the glass baubles on the xmas tree
+model XmasTree {
+  Profile   Profile  @relation(fields: [profileId], references: [id])
+  profileId String   @id
+  baubles   Json // { [baubleId]: { x, y } } in units of the tree's height
+  updatedAt DateTime @updatedAt
 }

@@ -575,6 +575,8 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         })
       }
 
+      // the last episode known finishes the series, which goes on Watched
+      const last = !nextEpisode(next.season, next.episode, Title.episodeCounts)
       const today = watchedOn(undefined)
       const entries = await fastify.prisma.$transaction((transaction) =>
         Promise.all(
@@ -600,9 +602,11 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
               where: { id: target.id },
               data: {
                 ...(stays ? theirs : next),
-                ...(target.state === CinemaState.UPCOMING && {
-                  state: CinemaState.WATCHING,
-                }),
+                ...(!stays && last
+                  ? { state: CinemaState.WATCHED }
+                  : target.state === CinemaState.UPCOMING && {
+                      state: CinemaState.WATCHING,
+                    }),
                 ...(finishes && {
                   Watches: { create: { season: next.season, ...today } },
                 }),

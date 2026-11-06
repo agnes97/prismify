@@ -9,6 +9,9 @@ const loginSchema = z.object({
   password: z.string(),
 })
 
+/** a token is renewed for 7 days at a time, but only up to this long after the password was typed */
+const SESSION_MAX_AGE_SECONDS = 60 * 24 * 60 * 60
+
 const auth: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   fastify.withTypeProvider<ZodTypeProvider>().post(
     '/login',
@@ -36,7 +39,7 @@ const auth: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
       }
 
       const accessToken = await reply.jwtSign(
-        { id: user.id },
+        { id: user.id, authAt: Math.floor(Date.now() / 1000) },
         { expiresIn: '7d' },
       )
 
@@ -46,6 +49,30 @@ const auth: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           lastLoggedIn: new Date(),
         },
       })
+
+      return reply.send({ accessToken })
+    },
+  )
+
+  fastify.post(
+    '/refresh',
+    {
+      onRequest: [fastify.authenticate],
+    },
+    async (request, reply) => {
+      // tokens from before authAt count from when they were issued
+      const authAt = request.user.authAt ?? request.user.iat ?? 0
+
+      if (Date.now() / 1000 - authAt > SESSION_MAX_AGE_SECONDS) {
+        return reply
+          .status(401)
+          .send({ message: 'Session too old, log in again' })
+      }
+
+      const accessToken = await reply.jwtSign(
+        { id: request.user.id, authAt },
+        { expiresIn: '7d' },
+      )
 
       return reply.send({ accessToken })
     },

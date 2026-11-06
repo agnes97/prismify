@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 const payloadSchema = z.object({
   id: z.string().uuid(),
+  authAt: z.number().optional(),
 })
 
 type Payload = z.infer<typeof payloadSchema>
@@ -12,6 +13,7 @@ type Payload = z.infer<typeof payloadSchema>
 declare module '@fastify/jwt' {
   interface FastifyJWT {
     payload: Payload
+    user: Payload & { iat?: number; exp?: number }
   }
 }
 

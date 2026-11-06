@@ -331,6 +331,6 @@ model CinemaRecommendation {
 model XmasTree {
   Profile   Profile  @relation(fields: [profileId], references: [id])
   profileId String   @id
-  baubles   Json // { [baubleId]: { x, y } } in units of the tree's height
+  baubles   Json // { [baubleId]: { x, y, year?, description? } }, x and y in units of the tree's height
   updatedAt DateTime @updatedAt
 }

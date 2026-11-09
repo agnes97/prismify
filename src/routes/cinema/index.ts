@@ -255,7 +255,8 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     },
     async function (request, reply) {
       const me = request.user.id
-      const { id, state, season, episode, watched, seasons } = request.body
+      const { id, state, season, episode, watched, seasons, watchUrl } =
+        request.body
       const viewers = [...new Set(request.body.viewers ?? [me])]
 
       const linked = await linkedIds(fastify.prisma, me)
@@ -356,12 +357,14 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                 state,
                 ...progress,
                 togetherId,
+                watchUrl: watchUrl ?? null,
                 Watches: { create: watches },
               },
               update: {
                 state,
                 ...progress,
                 ...(togetherId && { togetherId }),
+                ...(watchUrl && { watchUrl }),
                 Watches: { create: watches },
               },
             }),
@@ -390,6 +393,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
         mainGenre,
         beloved,
         dropped,
+        watchUrl,
         together,
         franchise,
       } = request.body
@@ -399,12 +403,20 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
           .status(400)
           .send({ message: 'Only you can tag your entry beloved or dropped' })
       }
+      if (watchUrl !== undefined && together) {
+        return reply
+          .status(400)
+          .send({ message: 'Only you can set where you watch it' })
+      }
       const onlyTags = [state, season, watched, mainGenre].every(
         (value) => value === undefined,
       )
       if (
         franchise &&
-        (dropped === undefined || beloved !== undefined || !onlyTags)
+        (dropped === undefined ||
+          beloved !== undefined ||
+          watchUrl !== undefined ||
+          !onlyTags)
       ) {
         return reply
           .status(400)
@@ -514,6 +526,7 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
                 ...(dropped !== undefined && {
                   droppedAt: dropped ? new Date() : null,
                 }),
+                ...(watchUrl !== undefined && { watchUrl }),
                 // tagging it alone keeps its place on the shelves, which sort
                 // by when an entry last changed
                 ...(onlyTags && { updatedAt: target.updatedAt }),

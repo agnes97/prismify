@@ -261,6 +261,7 @@ model CinemaEntry {
   mainGenre  String? // the genre picked to style it by over TMDB's first
   belovedAt  DateTime? // when its viewer tagged it beloved; null when not
   droppedAt  DateTime? // when its viewer stopped following the series or franchise; null when not
+  watchUrl   String? // where its viewer watches it: any page, opened in a new tab
   createdAt  DateTime               @default(now())
   updatedAt  DateTime               @updatedAt
   Watches    CinemaWatch[]

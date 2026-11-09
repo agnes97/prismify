@@ -7,6 +7,15 @@ const watched = z.string().regex(/^\d{4}(-\d{2}-\d{2})?$/)
 const season = z.number().int().min(1)
 // 0 before the season's first
 const episode = z.number().int().min(0)
+// where it is watched: any http(s) page
+const watchUrl = z
+  .string()
+  .trim()
+  .max(2048)
+  .url()
+  .refine((url) => /^https?:\/\//i.test(url), {
+    message: 'The link must start with http:// or https://',
+  })
 
 export const searchSchema = z.object({
   q: z.string().trim().min(1),
@@ -25,6 +34,8 @@ export const entrySchema = z.object({
   seasons: z.array(season).min(1).optional(),
   // me or people linked with me; two or more watch it together
   viewers: z.array(z.string().uuid()).min(1).optional(),
+  // where it is watched, on every new entry
+  watchUrl: watchUrl.optional(),
 })
 
 export const entryEditSchema = z
@@ -40,6 +51,8 @@ export const entryEditSchema = z
     beloved: z.boolean().optional(),
     // tagged dropped by its viewer, or not: no more recommendations for it
     dropped: z.boolean().optional(),
+    // where its viewer watches it, or null to forget it; only ever my own entry
+    watchUrl: watchUrl.nullable().optional(),
     // the whole together-group's entries, not only mine
     together: z.boolean().optional(),
     // dropped with all my films of its franchise

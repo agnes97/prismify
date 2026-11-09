@@ -68,6 +68,7 @@ export const entrySelect = {
   mainGenre: true,
   belovedAt: true,
   droppedAt: true,
+  watchUrl: true,
   createdAt: true,
   updatedAt: true,
   Title: { select: titleSelect },

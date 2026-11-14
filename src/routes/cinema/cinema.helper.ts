@@ -564,7 +564,9 @@ export async function fetchTitle(
 /**
  * The episode after `season`·`episode`, rolling over into the next season
  * when `episodeCounts` says this one is done, or null after the last episode
- * known. A season TMDB has no count for yet goes on episode by episode.
+ * known. A season TMDB has no count for yet, or only announced with no
+ * episodes, goes on episode by episode; and one only announced isn't rolled
+ * into, so the season before it ends there.
  */
 export function nextEpisode(
   season: number,
@@ -572,10 +574,10 @@ export function nextEpisode(
   episodeCounts: number[],
 ): { season: number; episode: number } | null {
   const inSeason = episodeCounts[season - 1]
-  if (inSeason === undefined || episode < inSeason) {
+  if (!inSeason || episode < inSeason) {
     return { season, episode: episode + 1 }
   }
-  if (season < episodeCounts.length) {
+  if ((episodeCounts[season] ?? 0) > 0) {
     return { season: season + 1, episode: 1 }
   }
   return null

@@ -17,7 +17,7 @@ pnpm prisma generate                          # Regenerate the client (also runs
 
 ## Architecture
 
-**Fastify 4 + Prisma 5 (PostgreSQL) + Zod**, ESM, deployed to **Vercel** as a single serverless function: `vercel.json` rewrites every path to `api/serverless.ts`, which registers `src/app.ts` as a plugin. The one exception is `api/schedules/recommendations.ts`, a private function Vercel Schedules runs every Sunday for the cinema's recommendations (the `schedules` and `functions` entries in `vercel.json`): it has no URL, and only Vercel's scheduler can call it. It is the shared backend for personal projects (portfolio CV, rating app, shopping mall scraper, library), served at `https://prismify.macovi.space`.
+**Fastify 4 + Prisma 5 (PostgreSQL) + Zod**, ESM, deployed to **Vercel** as a single serverless function: `vercel.json` rewrites every path to `api/serverless.ts`, which registers `src/app.ts` as a plugin. The one exception is `api/schedules/recommendations.ts`, a private function Vercel Schedules runs every Sunday for the cinema's recommendations (the `schedules` and `functions` entries in `vercel.json`): it has no URL, and only Vercel's scheduler can call it. It is the shared backend for personal projects (portfolio CV, rating app, shopping mall scraper, library, chillgrill), served at `https://prismify.macovi.space`.
 
 `src/app.ts` uses `@fastify/autoload` twice — do not edit it to register routes or plugins:
 

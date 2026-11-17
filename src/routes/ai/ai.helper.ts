@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { AiProvider, type PrismaClient } from '@prisma/client'
+import { AiProvider, AiPurpose, type PrismaClient } from '@prisma/client'
 import OpenAI from 'openai'
 
 /** each provider by the name it goes by in URLs and JSON, e.g. /ai/keys/openai */
@@ -123,37 +123,68 @@ export async function openaiFor(
 
 const MINUTE = 60 * 1000
 /**
- * how many calls a reader may make on each of their keys in each window, far
- * more than drawing spines by hand takes, so a stolen login can only spend a
- * little
+ * how many calls a reader may make on each of their keys in each window, by
+ * what they are for: far more than using each app by hand takes, so a stolen
+ * login can only spend a little
  */
-const ALLOWANCES = [
-  { within: 10 * MINUTE, calls: 10, wait: 'in a few minutes' },
-  { within: 24 * 60 * MINUTE, calls: 60, wait: 'tomorrow' },
-]
+const ALLOWANCES: Record<
+  AiPurpose,
+  { within: number; calls: number; refusal: string }[]
+> = {
+  // drawing spines by hand
+  LIBRARY: [
+    {
+      within: 10 * MINUTE,
+      calls: 10,
+      refusal: 'That’s a lot of spines at once, try again in a few minutes',
+    },
+    {
+      within: 24 * 60 * MINUTE,
+      calls: 60,
+      refusal: 'That’s a lot of spines at once, try again tomorrow',
+    },
+  ],
+  // one call per answer given to the sensei, and one per question added
+  CHILLGRILL: [
+    {
+      within: 10 * MINUTE,
+      calls: 60,
+      refusal: 'The sensei needs a breather, try again in a few minutes',
+    },
+    {
+      within: 24 * 60 * MINUTE,
+      calls: 400,
+      refusal: 'That’s enough grilling for today, come back tomorrow',
+    },
+  ],
+}
 const KEPT_FOR = 24 * 60 * MINUTE
 
 /**
  * Counts a call on the reader's key against their allowance with that
- * provider, or returns what to tell them when it is used up.
+ * provider for that purpose, or returns what to tell them when it is used up.
  */
 export async function useAllowance(
   prisma: PrismaClient,
   userId: string,
   provider: AiProvider,
+  purpose: AiPurpose = AiPurpose.LIBRARY,
 ): Promise<string | null> {
   const now = Date.now()
-  for (const { within, calls, wait } of ALLOWANCES) {
+  for (const { within, calls, refusal } of ALLOWANCES[purpose]) {
     const made = await prisma.aiCall.count({
-      where: { userId, provider, createdAt: { gte: new Date(now - within) } },
+      where: {
+        userId,
+        provider,
+        purpose,
+        createdAt: { gte: new Date(now - within) },
+      },
     })
-    if (made >= calls) {
-      return `That’s a lot of spines at once, try again ${wait}`
-    }
+    if (made >= calls) return refusal
   }
 
   await prisma.$transaction([
-    prisma.aiCall.create({ data: { userId, provider } }),
+    prisma.aiCall.create({ data: { userId, provider, purpose } }),
     // older ones no longer count against anything
     prisma.aiCall.deleteMany({
       where: { userId, createdAt: { lt: new Date(now - KEPT_FOR) } },

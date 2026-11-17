@@ -80,15 +80,23 @@ model AiKey {
   @@id([userId, provider])
 }
 
+// what a call on a reader's key was made for, each counted against its own allowance
+enum AiPurpose {
+  LIBRARY
+  CHILLGRILL
+}
+
 // one call made on a reader's key, counted so a stolen login can't run up their bill
 model AiCall {
   id        String     @id @default(uuid())
   User      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    String
   provider  AiProvider
+  purpose   AiPurpose  @default(LIBRARY)
   createdAt DateTime   @default(now())
 
   @@index([userId, provider, createdAt])
+  @@index([userId, provider, purpose, createdAt])
 }
 
 model Profile {
@@ -112,6 +120,8 @@ model Profile {
   CinemaRecommends CinemaRecommendation[]
 
   XmasTree XmasTree?
+
+  ChillgrillQuestions ChillgrillQuestion[]
 }
 
 // CV
@@ -334,4 +344,37 @@ model XmasTree {
   profileId String   @id
   baubles   Json // { [baubleId]: { x, y, year?, description? } }, x and y in units of the tree's height
   updatedAt DateTime @updatedAt
+}
+
+// Chillgrill
+enum ChillgrillCategory {
+  TYPESCRIPT
+  JAVASCRIPT
+  SYSTEM_DESIGN
+  MANAGEMENT
+}
+
+enum ChillgrillSourceType {
+  WEBPAGE
+  BOOK
+  CHAPTER
+}
+
+// an interview question someone practises, with the answer the sensei holds them to
+model ChillgrillQuestion {
+  id            String               @id @default(uuid())
+  Profile       Profile              @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profileId     String
+  category      ChillgrillCategory
+  question      String
+  answer        String
+  points        Json // string[]: the separate ideas the answer is made of, each one to cover
+  sourceType    ChillgrillSourceType
+  sourceUrl     String? // a webpage's address
+  sourceTitle   String? // a book's title, or a webpage's name
+  sourceAuthor  String?
+  sourceChapter String?
+  createdAt     DateTime             @default(now())
+
+  @@index([profileId, createdAt])
 }

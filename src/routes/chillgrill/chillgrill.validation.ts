@@ -58,12 +58,14 @@ export const questionSchema = z.object({
 export const idParamsSchema = z.object({ id: z.string().uuid() })
 
 export const senseiSchema = z.object({
-  // the whole conversation about the question so far, ending with the candidate's latest answer
+  // the whole conversation about the question so far, ending with the candidate's latest answer or nudge request
   turns: z
     .array(
       z.object({
         role: z.enum(['candidate', 'sensei']),
         text: text(4000),
+        // the candidate asked for a hint instead of answering
+        nudge: z.boolean().optional(),
       }),
     )
     .min(1)

@@ -7,6 +7,7 @@ export const CATEGORIES = {
   javascript: ChillgrillCategory.JAVASCRIPT,
   'system-design': ChillgrillCategory.SYSTEM_DESIGN,
   management: ChillgrillCategory.MANAGEMENT,
+  git: ChillgrillCategory.GIT,
 } as const satisfies Record<string, ChillgrillCategory>
 
 export type CategoryName = keyof typeof CATEGORIES

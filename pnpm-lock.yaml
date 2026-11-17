@@ -29,6 +29,9 @@ importers:
       '@vercel/blob':
         specifier: ^2.8.2
         version: 2.8.2
+      '@vercel/schedules':
+        specifier: ^0.0.3
+        version: 0.0.3
       fastify:
         specifier: ^4.0.0
         version: 4.26.0
@@ -550,6 +553,10 @@ packages:
 
   '@vercel/ruby@2.0.5':
     resolution: {integrity: sha512-Gfm8HDech41vf+EPleRzgoJUnDTJerKgckMm4KX0JT860gV9XBMSOWYH7eMWHmMza104+HRCWL7wT6OlpftF2Q==}
+
+  '@vercel/schedules@0.0.3':
+    resolution: {integrity: sha512-7wTFQjt5U000dmGBkoT47kK8erg3PSo0S+oOd9hOlV+YqnzbRUvOeybkqkr/Ced7wpelk/x7W8itRdsrSnr+LQ==}
+    engines: {node: '>=20.0.0'}
 
   '@vercel/static-build@2.3.0':
     resolution: {integrity: sha512-rtUvz9p3Opud2yj5ZrkbN6j2Xq79tDX8sWasmikpGvPbvgPVwzXcL8QhjGIJ6CLuwg2A9+2rBkyRBJKKfmsE8g==}
@@ -2797,6 +2804,10 @@ snapshots:
       ajv: 6.12.6
 
   '@vercel/ruby@2.0.5': {}
+
+  '@vercel/schedules@0.0.3':
+    dependencies:
+      '@vercel/oidc': 3.8.10
 
   '@vercel/static-build@2.3.0':
     dependencies:

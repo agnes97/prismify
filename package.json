@@ -32,6 +32,7 @@
     "@fastify/sensible": "^5.0.0",
     "@prisma/client": "5.9.1",
     "@vercel/blob": "^2.8.2",
+    "@vercel/schedules": "^0.0.3",
     "fastify": "^4.0.0",
     "fastify-plugin": "^4.0.0",
     "fastify-type-provider-zod": "^1.1.9",

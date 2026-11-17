@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import {
   CinemaKind,
   CinemaRecommendationKind,
@@ -87,15 +87,11 @@ const RECHECK_AFTER = 10 * 60 * 1000
 
 const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
   const tmdbToken = fastify.config.TMDB_TOKEN || undefined
-  const cronSecret = fastify.config.CRON_SECRET || undefined
   const noTmdb = { message: 'Titles can’t be looked up right now' }
 
-  // visitors can search too, and the cron brings its own secret
+  // visitors can search too
   fastify.addHook('onRequest', async (request, reply) => {
-    const url = request.routeOptions.url
-    if (url.endsWith('/search') || url.endsWith('/cron/recommendations')) {
-      return
-    }
+    if (request.routeOptions.url.endsWith('/search')) return
     return fastify.authenticate(request, reply)
   })
 
@@ -972,23 +968,6 @@ const cinema: FastifyPluginAsync = async (fastify, _opts): Promise<void> => {
     }
 
     return recommendationsOf(request.user.id)
-  })
-
-  // Vercel's cron, every Sunday, for everyone with shelves
-  fastify.get('/cron/recommendations', async function (request, reply) {
-    const expected = Buffer.from(`Bearer ${cronSecret ?? ''}`)
-    const given = Buffer.from(request.headers.authorization ?? '')
-    if (
-      !cronSecret ||
-      given.length !== expected.length ||
-      !timingSafeEqual(given, expected)
-    ) {
-      return reply.status(401).send({ message: 'Unauthorized' })
-    }
-    if (!tmdbToken) return reply.status(503).send(noTmdb)
-
-    await scanRecommendations(fastify.prisma, tmdbToken)
-    return reply.status(204).send()
   })
 
   fastify.get('/links', async function (request, _reply) {

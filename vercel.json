@@ -1,19 +1,29 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
       "source": "/(.*)",
       "destination": "/api/serverless.ts"
     }
   ],
-  "crons": [
-    {
-      "path": "/cinema/cron/recommendations",
-      "schedule": "0 6 * * 0"
+  "schedules": {
+    "cinema-recommendations": {
+      "schedule": "0 6 * * 0",
+      "function": "api/schedules/recommendations"
     }
-  ],
+  },
   "functions": {
     "api/serverless.ts": {
       "maxDuration": 60
+    },
+    "api/schedules/recommendations.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/{*.js,*.json,*.node,schema.prisma}",
+      "experimentalTriggers": [
+        {
+          "type": "schedule/v1beta"
+        }
+      ]
     }
   }
 }
